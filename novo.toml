@@ -1,0 +1,9 @@
+[package]
+name        = "novo-vte"
+version     = "0.1.0"
+description = "Shared xterm / VT escape-sequence parser + grid model — extracted from orbit/novoterm so orbit/novomux can consume the exact same parser implementation.  Eliminates the 'novomux running inside novoterm renders differently than novomux running inside xterm' class of conformance bug."
+main        = "src/main.nv"
+
+[dependencies]
+# Pure-Novo library — parser.nv + grid.nv depend only on
+# std.array via @ffi re-declarations.  No external Orbit deps.
