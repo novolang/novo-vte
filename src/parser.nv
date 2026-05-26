@@ -553,10 +553,10 @@ fn apply_256_color(g: Grid, is_fg: Bool, n: Int) -> Grid [io]
 // cell — no more quantisation to the 6×6×6 cube.  Pack as
 // r<<16 | g<<8 | b.
 fn apply_truecolor(g: Grid, is_fg: Bool, r: Int, gc: Int, b: Int) -> Grid
-  let rgb = int.bit_or(
-              int.bit_or(int.shl(int.bit_and(r, 255), 16),
-                          int.shl(int.bit_and(gc, 255), 8)),
-              int.bit_and(b, 255))
+  let rgb = bits.bor(
+              bits.bor(int.shl(bits.band(r, 255), 16),
+                          int.shl(bits.band(gc, 255), 8)),
+              bits.band(b, 255))
   if is_fg
     grid.grid_set_fg(g, rgb)
   else

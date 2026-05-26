@@ -88,23 +88,23 @@ fn blank_glyph() -> Int
 // without ever touching word 1.
 
 fn pack_word0(glyph: Int, attrs: Int, fg_rgb: Int) -> Int
-  int.bit_or(int.bit_or(
-    int.bit_and(glyph, 65535),
-    int.shl(int.bit_and(attrs, 255), 16)),
-    int.shl(int.bit_and(fg_rgb, 16777215), 24))
+  bits.bor(bits.bor(
+    bits.band(glyph, 65535),
+    int.shl(bits.band(attrs, 255), 16)),
+    int.shl(bits.band(fg_rgb, 16777215), 24))
 
 fn pack_word1(bg_rgb: Int) -> Int
-  int.bit_and(bg_rgb, 16777215)
+  bits.band(bg_rgb, 16777215)
 
 fn cell_glyph(w0: Int) -> Int
-  int.bit_and(w0, 65535)
+  bits.band(w0, 65535)
 fn cell_attrs(w0: Int) -> Int
-  int.bit_and(int.shr_logical(w0, 16), 255)
+  bits.band(int.shr_logical(w0, 16), 255)
 // 24-bit RGB packed as r<<16 | g<<8 | b.
 fn cell_fg(w0: Int) -> Int
-  int.bit_and(int.shr_logical(w0, 24), 16777215)
+  bits.band(int.shr_logical(w0, 24), 16777215)
 fn cell_bg(w1: Int) -> Int
-  int.bit_and(w1, 16777215)
+  bits.band(w1, 16777215)
 
 // Default fg / bg as RGB (resolved from palette[7] / palette[0]
 // via the C-side default seed — matches the same xterm ANSI
@@ -492,19 +492,19 @@ fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io]
 fn grid_set_fg(g: Grid, fg_rgb: Int) -> Grid
   Grid { rows: g.rows, cols: g.cols,
          cursor_row: g.cursor_row, cursor_col: g.cursor_col,
-         fg: int.bit_and(fg_rgb, 16777215), bg: g.bg, attrs: g.attrs,
+         fg: bits.band(fg_rgb, 16777215), bg: g.bg, attrs: g.attrs,
          cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
 
 fn grid_set_bg(g: Grid, bg_rgb: Int) -> Grid
   Grid { rows: g.rows, cols: g.cols,
          cursor_row: g.cursor_row, cursor_col: g.cursor_col,
-         fg: g.fg, bg: int.bit_and(bg_rgb, 16777215), attrs: g.attrs,
+         fg: g.fg, bg: bits.band(bg_rgb, 16777215), attrs: g.attrs,
          cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
 
 fn grid_set_attrs(g: Grid, attrs: Int) -> Grid
   Grid { rows: g.rows, cols: g.cols,
          cursor_row: g.cursor_row, cursor_col: g.cursor_col,
-         fg: g.fg, bg: g.bg, attrs: int.bit_and(attrs, 255),
+         fg: g.fg, bg: g.bg, attrs: bits.band(attrs, 255),
          cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
 
 // Slice 9: SGR 0 (reset) reads runtime defaults so OSC 10/11
@@ -689,7 +689,7 @@ fn grid_mouse_mode(g: Grid) -> Int [io]
 
 fn grid_mouse_mode_bit_on(g: Grid, bit: Int) -> Grid [io]
   let cur = array_i64_get_h(g.alt_meta, 14)
-  array_i64_set_h(g.alt_meta, 14, int.bit_or(cur, bit))
+  array_i64_set_h(g.alt_meta, 14, bits.bor(cur, bit))
   g
 
 fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io]
@@ -697,7 +697,7 @@ fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io]
   // Clear `bit`: AND with ~bit.  No bitwise-not in Novo std —
   // use XOR with all-ones-mask = ~bit when current bit is set.
   // Simpler: subtract if present.
-  let new = if int.bit_and(cur, bit) != 0
+  let new = if bits.band(cur, bit) != 0
     cur - bit
   else
     cur
