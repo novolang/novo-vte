@@ -1238,6 +1238,16 @@ fn grid_view_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
 fn grid_view_offset(g: Grid) -> Int [io]
   scrollback_view_offset(g.scrollback)
 
+// novomux slice 33 — public query for the alt-screen flag.
+// Returns 1 when the pane is currently in alt-screen mode (vim,
+// less, htop with mouse mode), 0 otherwise.  Lets consumers
+// decide whether to handle a mouse event themselves or let the
+// app inside handle it.  Internal helpers already check the
+// flag directly via `array_i64_get_h(g.alt_meta, 2)`; this is
+// the same value exported.
+fn grid_using_alt(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 2)
+
 // Adjust the scrollback view offset by `delta` lines (positive =
 // scroll up into history, negative = scroll back down toward
 // live).  Clamps to [0, scrollback_count].  No-op when in alt
