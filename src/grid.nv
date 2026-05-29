@@ -153,6 +153,15 @@ struct Grid
   cells: Int        // handle from array_i64_alloc_h — ACTIVE buffer
   alt_meta: Int     // 8-slot i64 array (alt-screen + saved state)
   scrollback: Int   // i64 array — scrollback ring + view state
+  // Slice 52 — wrapped-line reflow.  Per-row i64 array sized
+  // `rows`; entry N = 1 if row N's last cell continues onto
+  // row N+1 via auto-wrap (xterm's "soft wrap"), 0 if row N
+  // ended with a hard line break (CR/LF) or a short content row.
+  // grid_resize uses this to rejoin soft-wrapped runs into
+  // logical lines and re-wrap them at the new col count, so a
+  // shell prompt that wrapped at 80 cols unwraps cleanly when
+  // the user attaches from a 120-col terminal.
+  wrap_flags: Int
 
 // Slice 2b/alt-screen: alt_meta side-array holds the state that
 // only applies when DEC ?1049/?1047/?47 toggling is in play.
@@ -365,6 +374,10 @@ fn grid_new(rows: Int, cols: Int) -> Grid [io]
   // mouse_mode default = 0 (no tracking).
   array_i64_set_h(meta, 14, 0)
   let sb = scrollback_new(scrollback_capacity(), cols)
+  // Slice 52 — per-row wrap flags, all zero (no wraps yet).
+  let wf = array_i64_alloc_h(rows)
+  for i in 0..rows
+    array_i64_set_h(wf, i, 0)
   Grid {
     rows: rows, cols: cols,
     cursor_row: 0, cursor_col: 0,
@@ -372,6 +385,7 @@ fn grid_new(rows: Int, cols: Int) -> Grid [io]
     // (previously 8-bit palette indices).
     fg: default_fg_rgb(), bg: default_bg_rgb(), attrs: 0,
     cells: h, alt_meta: meta, scrollback: sb,
+    wrap_flags: wf,
   }
 
 // Release the backing arrays.  Safe to call multiple times — the
@@ -388,6 +402,7 @@ fn grid_drop(g: Grid) [io]
   array_i64_drop_h(g.cells)
   array_i64_drop_h(g.alt_meta)
   array_i64_drop_h(g.scrollback)
+  array_i64_drop_h(g.wrap_flags)
 
 fn grid_rows(g: Grid) -> Int
   g.rows
@@ -481,7 +496,7 @@ fn grid_cursor_set(g: Grid, row: Int, col: Int) -> Grid [io]
          cursor_row: clamp(row, 0, g.rows - 1),
          cursor_col: clamp(col, 0, g.cols - 1),
          fg: g.fg, bg: g.bg, attrs: g.attrs,
-         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
 
 fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io]
   grid_cursor_set(g, g.cursor_row + dr, g.cursor_col + dc)
@@ -493,19 +508,19 @@ fn grid_set_fg(g: Grid, fg_rgb: Int) -> Grid
   Grid { rows: g.rows, cols: g.cols,
          cursor_row: g.cursor_row, cursor_col: g.cursor_col,
          fg: bits.band(fg_rgb, 16777215), bg: g.bg, attrs: g.attrs,
-         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
 
 fn grid_set_bg(g: Grid, bg_rgb: Int) -> Grid
   Grid { rows: g.rows, cols: g.cols,
          cursor_row: g.cursor_row, cursor_col: g.cursor_col,
          fg: g.fg, bg: bits.band(bg_rgb, 16777215), attrs: g.attrs,
-         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
 
 fn grid_set_attrs(g: Grid, attrs: Int) -> Grid
   Grid { rows: g.rows, cols: g.cols,
          cursor_row: g.cursor_row, cursor_col: g.cursor_col,
          fg: g.fg, bg: g.bg, attrs: bits.band(attrs, 255),
-         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
 
 // Slice 9: SGR 0 (reset) reads runtime defaults so OSC 10/11
 // changes take effect on the very next attribute reset (apps
@@ -520,7 +535,7 @@ fn grid_sgr_reset(g: Grid) -> Grid [io]
   Grid { rows: g.rows, cols: g.cols,
          cursor_row: g.cursor_row, cursor_col: g.cursor_col,
          fg: _td_fg_get_h(), bg: _td_bg_get_h(), attrs: 0,
-         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
 
 // ── Scroll ─────────────────────────────────────────────────────
 
@@ -566,6 +581,15 @@ fn grid_scroll_up(g: Grid) -> Grid [io]
     for c in 0..g.cols
       cells_copy(g.cells, grid_idx(g, r, c),
                   g.cells, grid_idx(g, r + 1, c))
+  // Slice 52 — shift the per-row wrap_flags alongside the cells
+  // so the row→wrap-flag correspondence stays intact across
+  // scroll-up.  Without this, marked-soft-wrap rows keep their
+  // mark on the row index they USED to occupy, mis-identifying
+  // logical lines on the next reflow.
+  for r in top..bot
+    let next = array_i64_get_h(g.wrap_flags, r + 1)
+    array_i64_set_h(g.wrap_flags, r, next)
+  array_i64_set_h(g.wrap_flags, bot, 0)
   // Blank the now-empty BOTTOM ROW OF THE REGION, not the grid's
   // last row — that would punch a hole below the region for any
   // partial-region scroll.
@@ -603,6 +627,12 @@ fn grid_put_char(g: Grid, glyph: Int) -> Grid [io]
     // by 1 — caught reproducing nvim's redraw-after-telescope
     // path where each line filled to the right margin.
     let g0 = if grid_wrap_pending(g) == 1 and grid_autowrap(g) == 1
+      // Slice 52 — mark the row we're about to wrap OUT of as a
+      // soft-wrap continuation so grid_resize can rejoin the
+      // logical line later.  Set BEFORE the scroll-up so the
+      // mark lands on the actual row of the wrapping cell;
+      // scroll-up will shift it like the rest.
+      grid_set_row_wrapped(g, g.cursor_row, 1)
       let bot = grid_region_bottom(g)
       let g_wrap = if g.cursor_row >= bot
         let gs = grid_scroll_up(g)
@@ -634,6 +664,19 @@ fn grid_put_char(g: Grid, glyph: Int) -> Grid [io]
         grid_set_wrap_pending(g_keep)
     else
       grid_cursor_set(g2, g2.cursor_row, next_col)
+
+// Slice 52 — per-row wrap-flag accessors.  Bounds-checked: a
+// stale row index (after scroll-up shifts) is treated as 0 so
+// resize-time reflow doesn't double-count.
+fn grid_row_wrapped(g: Grid, row: Int) -> Int [io]
+  if row < 0 or row >= g.rows
+    0
+  else
+    array_i64_get_h(g.wrap_flags, row)
+
+fn grid_set_row_wrapped(g: Grid, row: Int, on: Int) [io]
+  if row >= 0 and row < g.rows
+    array_i64_set_h(g.wrap_flags, row, if on != 0 then 1 else 0)
 
 // DECAWM accessor + setter.  Slot 10 of alt_meta; defaults to 1
 // (autowrap on) per xterm.  When 0, grid_put_char clamps cursor
@@ -982,7 +1025,7 @@ fn grid_decrc(g: Grid) -> Grid [io]
          cursor_row: clamp(r, 0, g.rows - 1),
          cursor_col: clamp(c, 0, g.cols - 1),
          fg: fg, bg: bg, attrs: attrs,
-         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
 
 // Allocate the alt buffer lazily (first time we enter alt).
 fn alloc_alt_buf(g: Grid) -> Int [io]
@@ -1019,7 +1062,7 @@ fn grid_enter_alt_screen(g: Grid) -> Grid [io]
     Grid { rows: g.rows, cols: g.cols,
            cursor_row: 0, cursor_col: 0,
            fg: default_fg_rgb(), bg: default_bg_rgb(), attrs: 0,
-           cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+           cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
   else
     // Save cursor + SGR for the eventual exit.
     array_i64_set_h(g.alt_meta, 3, g.cursor_row)
@@ -1057,7 +1100,7 @@ fn grid_enter_alt_screen(g: Grid) -> Grid [io]
     Grid { rows: g.rows, cols: g.cols,
            cursor_row: 0, cursor_col: 0,
            fg: default_fg_rgb(), bg: default_bg_rgb(), attrs: 0,
-           cells: alt_h, alt_meta: g.alt_meta, scrollback: g.scrollback }
+           cells: alt_h, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
 
 // Exit the alternate screen buffer.  Swaps `cells` back to the
 // primary handle stashed in meta[0], restores saved cursor +
@@ -1087,7 +1130,7 @@ fn grid_exit_alt_screen(g: Grid) -> Grid [io]
              cursor_row: clamp(r, 0, g.rows - 1),
              cursor_col: clamp(c, 0, g.cols - 1),
              fg: fg, bg: bg, attrs: attrs,
-             cells: primary, alt_meta: g.alt_meta, scrollback: g.scrollback }
+             cells: primary, alt_meta: g.alt_meta, scrollback: g.scrollback, wrap_flags: g.wrap_flags }
 
 // ── Resize ─────────────────────────────────────────────────────
 //
@@ -1112,6 +1155,74 @@ fn alloc_blank_cells(rows: Int, cols: Int) -> Int [io]
     array_i64_set_h(h, 2 * i + 1, bw1)
     i = i + 1
   h
+
+// Slice 52 — find row's content length (highest non-blank column
+// + 1; 0 for entirely-blank row).  Used by reflow_cells to know
+// how many cells to copy from each old row.
+fn row_content_len(cells: Int, cols: Int, row: Int) -> Int [io]
+  let bw0 = blank_word0()
+  let mut last = 0
+  let mut c = cols - 1
+  let mut done = false
+  while not done and c >= 0
+    let idx = (row * cols + c) * 2
+    let w0 = array_i64_get_h(cells, idx)
+    if w0 != bw0
+      last = c + 1
+      done = true
+    else
+      c = c - 1
+  last
+
+// Slice 52 — wrap-aware reflow.  Walks old grid top→bottom in
+// "logical lines" defined by old_wrap (consecutive wrapped rows
+// form one logical line), and emits each line into the new
+// grid at new_cols, re-wrapping where necessary.  Writes
+// new_wrap as it goes so a subsequent resize sees the same
+// soft-wrap structure.
+//
+// Caller's responsibility to:
+//   - pre-blank new_cells (alloc_blank_cells does this)
+//   - pre-zero new_wrap (caller's grid_new / re-alloc)
+// Returns the final (new_r, new_c) packed as (new_r << 32) |
+// (new_c & 0xffffffff) so the caller can land the cursor at
+// the logical position the resize finishes on — without this
+// the cursor floats to the top-left every reflow.
+fn reflow_cells(old_cells: Int, old_cols: Int, old_rows: Int,
+                 old_wrap: Int,
+                 new_cells: Int, new_cols: Int, new_rows: Int,
+                 new_wrap: Int) -> Int [io]
+  let mut new_r = 0
+  let mut new_c = 0
+  let mut old_r = 0
+  while old_r < old_rows and new_r < new_rows
+    let wrapped = array_i64_get_h(old_wrap, old_r)
+    let content_len = if wrapped == 1
+      old_cols
+    else
+      row_content_len(old_cells, old_cols, old_r)
+    let mut i = 0
+    while i < content_len and new_r < new_rows
+      let s_idx = (old_r * old_cols + i) * 2
+      let d_idx = (new_r * new_cols + new_c) * 2
+      array_i64_set_h(new_cells, d_idx,
+                      array_i64_get_h(old_cells, s_idx))
+      array_i64_set_h(new_cells, d_idx + 1,
+                      array_i64_get_h(old_cells, s_idx + 1))
+      new_c = new_c + 1
+      if new_c >= new_cols and (i + 1 < content_len or wrapped == 1)
+        array_i64_set_h(new_wrap, new_r, 1)
+        new_r = new_r + 1
+        new_c = 0
+      i = i + 1
+    if wrapped == 0
+      new_r = new_r + 1
+      new_c = 0
+    old_r = old_r + 1
+  // Clamp the end-position to the buffer bounds before packing.
+  let pr = if new_r >= new_rows then new_rows - 1 else new_r
+  let pc = if new_c >= new_cols then new_cols - 1 else new_c
+  int.shl(pr, 32) + bits.band(pc, 4294967295)
 
 // Copy `old_cells` into `new_cells` cell-by-cell, top-left
 // aligned, clipping at the smaller of (old_rows/cols,
@@ -1158,7 +1269,25 @@ fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io]
     // Replace the active buffer.  Old cells handle gets freed;
     // alt_meta + scrollback handles outlive resize.
     let new_active = alloc_blank_cells(new_rows, new_cols)
-    copy_cells(g.cells, g.cols, new_active, new_cols, copy_r, copy_c)
+    // Slice 52 — wrap-aware reflow for the PRIMARY buffer when
+    // cols change.  Alt-screen apps (vim / htop / less) redraw
+    // on SIGWINCH so their cell-aligned copy is fine; primary
+    // shells need the soft-wrap rejoin or long prompts /
+    // command output keep their old wrap point at the new
+    // width.  Reflow returns the end position packed
+    // (row << 32) | col so the cursor follows the content.
+    let new_wrap = array_i64_alloc_h(new_rows)
+    for wi in 0..new_rows
+      array_i64_set_h(new_wrap, wi, 0)
+    let mut reflow_cur_r = 0
+    let mut reflow_cur_c = 0
+    if active_is_alt or new_cols == g.cols
+      copy_cells(g.cells, g.cols, new_active, new_cols, copy_r, copy_c)
+    else
+      let end_packed = reflow_cells(g.cells, g.cols, g.rows, g.wrap_flags,
+                                     new_active, new_cols, new_rows, new_wrap)
+      reflow_cur_r = int.shr_logical(end_packed, 32)
+      reflow_cur_c = bits.band(end_packed, 4294967295)
     array_i64_drop_h(g.cells)
     if active_is_alt
       // The alt buffer was just freed via g.cells — reuse new_active
@@ -1182,13 +1311,29 @@ fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io]
       copy_cells(primary_saved, g.cols, new_saved, new_cols, copy_r, copy_c)
       array_i64_drop_h(primary_saved)
       array_i64_set_h(g.alt_meta, 0, new_saved)
-    let new_cur_r = if g.cursor_row < new_rows then g.cursor_row else new_rows - 1
-    let new_cur_c = if g.cursor_col < new_cols then g.cursor_col else new_cols - 1
+    // Cursor placement: if reflow ran (primary + cols changed),
+    // land the cursor where the reflow ended so newly-typed input
+    // continues at the right spot.  Otherwise clamp the old
+    // position into the new bounds (current behavior).
+    let used_reflow = (not active_is_alt) and new_cols != g.cols
+    let new_cur_r = if used_reflow
+      reflow_cur_r
+    elif g.cursor_row < new_rows
+      g.cursor_row
+    else
+      new_rows - 1
+    let new_cur_c = if used_reflow
+      reflow_cur_c
+    elif g.cursor_col < new_cols
+      g.cursor_col
+    else
+      new_cols - 1
+    array_i64_drop_h(g.wrap_flags)
     Grid { rows: new_rows, cols: new_cols,
            cursor_row: new_cur_r, cursor_col: new_cur_c,
            fg: g.fg, bg: g.bg, attrs: g.attrs,
            cells: new_active, alt_meta: g.alt_meta,
-           scrollback: g.scrollback }
+           scrollback: g.scrollback, wrap_flags: new_wrap }
 
 // ── Scrollback view ────────────────────────────────────────────
 //
