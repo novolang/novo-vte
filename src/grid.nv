@@ -271,6 +271,14 @@ fn scrollback_cols(sb: Int) -> Int [io]
 fn scrollback_set_view_offset(sb: Int, off: Int) [io]
   array_i64_set_h(sb, 3, off)
 
+// Empty the scrollback: reset head, count and view-offset to 0 (the ring
+// storage is left as-is; count=0 makes every row out of range).  Backs
+// tmux's clear-history.
+fn scrollback_clear(sb: Int) [io]
+  array_i64_set_h(sb, 1, 0)   // head
+  array_i64_set_h(sb, 2, 0)   // count
+  array_i64_set_h(sb, 3, 0)   // view_offset
+
 // Push one row of `cols` cells from a source array (typically the
 // row about to fall off the top of the live grid via scroll_up).
 // `src_handle` is an i64-array handle; cells [src_offset ..
