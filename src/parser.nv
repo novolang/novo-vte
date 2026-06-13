@@ -420,7 +420,11 @@ fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io]
   elif final_byte == 113
     let intm = array_i64_get_h(p.slots, slot_intermediate())
     if intm == 32
-      grid.grid_set_cursor_shape(g, parser_param(p, 0, 0))
+      // Latch dirty so a re-emitting host (novomux) forwards the new
+      // shape this frame — even when the value matches the current
+      // one (vim re-asserts block 2 on every return to normal).
+      grid.grid_mark_cursor_shape_dirty(
+        grid.grid_set_cursor_shape(g, parser_param(p, 0, 0)))
     else
       g
   else
@@ -487,6 +491,13 @@ fn dispatch_private_mode(p: Parser, g: Grid, set: Bool) -> Grid [io]
       grid.grid_mouse_mode_bit_on(g, 8)
     else
       grid.grid_mouse_mode_bit_off(g, 8)
+  // DECTCEM (n=25): cursor visibility.  Apps hide the cursor
+  // (`?25l`) around a repaint and show it again (`?25h`) once the
+  // frame settles — nvim does this on every redraw.  Track it so
+  // the novomux renderer can keep the host cursor hidden mid-paint
+  // instead of flashing it at each intermediate position.
+  elif n == 25
+    grid.grid_set_cursor_visible(g, set)
   else
     g
 

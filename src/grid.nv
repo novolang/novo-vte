@@ -228,8 +228,24 @@ struct Grid
 //                              handling).  Shift held overrides
 //                              the forwarding — local selection
 //                              still works.
+//  15  cursor_visible        — DECTCEM (DECSET/RST ?25).  1 =
+//                              shown (default), 0 = hidden.  Apps
+//                              hide the cursor while they repaint
+//                              (nvim wraps each redraw in
+//                              `?25l` … `?25h`); a renderer that
+//                              re-emits the grid must honour this
+//                              or the host cursor flickers at the
+//                              intermediate paint positions.
+//  16  cursor_shape_dirty    — set when the app emits a DECSCUSR
+//                              this frame; a re-emitting renderer
+//                              consumes + clears it to forward the
+//                              shape exactly when the app changes
+//                              it (a value-diff would miss a
+//                              re-assert of the default block 2,
+//                              and emitting every frame floods the
+//                              stream with `CSI Ps SP q`).
 fn alt_meta_slots() -> Int
-  15
+  17
 
 // Slice 2b/scrollback: side-array layout for the scrollback ring
 // buffer + view state.  Hard-coded capacity for v1 (1000 lines —
@@ -381,6 +397,10 @@ fn grid_new(rows: Int, cols: Int) -> Grid [io]
   array_i64_set_h(meta, 13, 2)
   // mouse_mode default = 0 (no tracking).
   array_i64_set_h(meta, 14, 0)
+  // cursor_visible default = 1 (shown; apps hide via DECRST ?25).
+  array_i64_set_h(meta, 15, 1)
+  // cursor_shape_dirty default = 0 (no pending DECSCUSR to forward).
+  array_i64_set_h(meta, 16, 0)
   let sb = scrollback_new(scrollback_capacity(), cols)
   // Slice 52 — per-row wrap flags, all zero (no wraps yet).
   let wf = array_i64_alloc_h(rows)
@@ -730,6 +750,33 @@ fn grid_cursor_shape(g: Grid) -> Int [io]
 fn grid_set_cursor_shape(g: Grid, shape: Int) -> Grid [io]
   let s = if shape < 0 or shape > 6 then 2 else shape
   array_i64_set_h(g.alt_meta, 13, s)
+  g
+
+// DECTCEM cursor visibility (DECSET/RST ?25).  1 = shown.  Apps
+// hide the cursor (`?25l`) while repainting and show it (`?25h`)
+// once the frame settles; the renderer honours this so the host
+// cursor doesn't flicker at intermediate paint positions.
+fn grid_cursor_visible(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 15)
+
+fn grid_set_cursor_visible(g: Grid, on: Bool) -> Grid [io]
+  array_i64_set_h(g.alt_meta, 15, if on then 1 else 0)
+  g
+
+// DECSCUSR forward latch.  The parser marks this when an app emits
+// `CSI Ps SP q`; the renderer reads it to forward the new shape and
+// clears it, so the shape is re-emitted exactly on the app's mode
+// changes rather than every frame (which would flood output) or
+// only on a value change (which would miss a re-assert of block 2).
+fn grid_cursor_shape_dirty(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 16)
+
+fn grid_mark_cursor_shape_dirty(g: Grid) -> Grid [io]
+  array_i64_set_h(g.alt_meta, 16, 1)
+  g
+
+fn grid_clear_cursor_shape_dirty(g: Grid) -> Grid [io]
+  array_i64_set_h(g.alt_meta, 16, 0)
   g
 
 // Mouse-mode bitmask accessor + setter.  Caller (parser) ORs
