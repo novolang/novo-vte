@@ -1,0 +1,1336 @@
+// grid.nv — Cell + Grid model for novoterm.
+//
+// Slice 2 of features/orbits/novoterm/README.md.  Pure-Novo:
+// no FFI surface of its own.  Backed by a std.array i64 array
+// (unboxed scalar storage, O(1) get/set) so per-frame mutation
+// doesn't allocate.
+//
+// Cell layout (packed Int, low bits → high bits):
+//   bits  0..7   : glyph (ASCII 0..127; high-bit codepoints
+//                          stored verbatim, Unicode lands later)
+//   bits  8..11  : foreground color index (0..15)
+//   bits 12..15  : background color index (0..15)
+//   bits 16..23  : attribute bitmask
+//                    bit 0 = bold      (SGR 1 / 22)
+//                    bit 1 = underline (SGR 4 / 24)
+//                    bit 2 = reverse   (SGR 7 / 27)
+//
+// Grid is a flat (rows × cols) i64 array indexed by
+// `row * cols + col`.  Cursor + current SGR state ride along on
+// the Grid struct as plain Int fields; every mutator returns a
+// new Grid with the updated values so the caller's `let mut g =
+// grid.grid_new(...)` reassign carries them forward.
+//
+// Color indices follow the standard 16-color ANSI palette:
+//   0=black 1=red 2=green 3=yellow 4=blue 5=magenta 6=cyan 7=white
+//   8..15 are the bright variants.  Default fg = 7 (white),
+//   default bg = 0 (black).
+//
+// Why these @ffi re-declarations live here: pkg-build loads
+// sibling modules with `prepend_stdlib:false`, so compiler/stdlib/
+// array.nv's decls are NOT visible here even though they're
+// available in main.nv.  Re-declaring the @ffi names locally
+// maps them back to the same C symbols and the linker resolves
+// them once.  Harmless duplication; no impact on the produced
+// binary.
+
+@ffi("novo_array_i64_alloc")
+fn array_i64_alloc_h(capacity: Int) -> Int [io]
+
+@ffi("novo_array_i64_get")
+fn array_i64_get_h(h: Int, i: Int) -> Int [io]
+
+@ffi("novo_array_i64_set")
+fn array_i64_set_h(h: Int, i: Int, v: Int) [io]
+
+@ffi("novo_array_i64_drop")
+fn array_i64_drop_h(h: Int) [io]
+
+// ── Constants ───────────────────────────────────────────────────
+
+fn attr_bold() -> Int
+  1
+fn attr_underline() -> Int
+  2
+fn attr_reverse() -> Int
+  4
+
+fn default_fg() -> Int
+  7
+fn default_bg() -> Int
+  0
+fn blank_glyph() -> Int
+  32   // ASCII space
+
+// ── Cell packing helpers ───────────────────────────────────────
+//
+// Slice 9 (truecolor): cell widened from 1 i64 → 2 i64s so we can
+// store full 24-bit RGB per channel.  Previous 1-i64 layout had
+// fg / bg as 8-bit palette indices (256-color cube quantisation
+// at parse time), losing the original truecolor SGR values.
+//
+// Cell layout (2 consecutive i64s in the cells array):
+//   word 0:  bits  0..15 — glyph codepoint (16 bits)
+//            bits 16..23 — attrs (8 bits)
+//            bits 24..47 — fg RGB packed as r<<16 | g<<8 | b (24 bits)
+//            bits 48..63 — reserved
+//   word 1:  bits  0..23 — bg RGB packed as r<<16 | g<<8 | b (24 bits)
+//            bits 24..63 — reserved
+//
+// Storage: cells array sized 2 × rows × cols.  Indexes:
+//   word 0 at  2 * (row * cols + col)
+//   word 1 at  2 * (row * cols + col) + 1
+//
+// API contract: the renderer reads BOTH words per cell to pack
+// the GPU instance buffer; the parser writes BOTH on each glyph
+// emit (via grid_put_char).  Pure-Novo callers that don't care
+// about colors can use grid_get_word0 + cell_glyph / cell_attrs
+// without ever touching word 1.
+
+fn pack_word0(glyph: Int, attrs: Int, fg_rgb: Int) -> Int
+  bits.bor(bits.bor(
+    bits.band(glyph, 65535),
+    int.shl(bits.band(attrs, 255), 16)),
+    int.shl(bits.band(fg_rgb, 16777215), 24))
+
+fn pack_word1(bg_rgb: Int) -> Int
+  bits.band(bg_rgb, 16777215)
+
+fn cell_glyph(w0: Int) -> Int
+  bits.band(w0, 65535)
+fn cell_attrs(w0: Int) -> Int
+  bits.band(int.shr_logical(w0, 16), 255)
+// 24-bit RGB packed as r<<16 | g<<8 | b.
+fn cell_fg(w0: Int) -> Int
+  bits.band(int.shr_logical(w0, 24), 16777215)
+fn cell_bg(w1: Int) -> Int
+  bits.band(w1, 16777215)
+
+// Default fg / bg as RGB (resolved from palette[7] / palette[0]
+// via the C-side default seed — matches the same xterm ANSI
+// values the renderer used to bake into the WGSL shader).
+fn default_fg_rgb() -> Int
+  0xAAAAAA                              // ANSI white (index 7)
+fn default_bg_rgb() -> Int
+  0x000000                              // ANSI black (index 0)
+
+fn blank_word0() -> Int
+  pack_word0(blank_glyph(), 0, default_fg_rgb())
+fn blank_word1() -> Int
+  pack_word1(default_bg_rgb())
+
+// Back-compat alias used by old call sites that just want a
+// "default cell" pair.  Always pair with `blank_word1()` on
+// writes — `blank_cell()` returns the W0 half only.
+fn blank_cell() -> Int
+  blank_word0()
+
+// Back-compat pack_cell shim: takes (glyph, fg_idx, bg_idx, attrs)
+// — the slice-2b 1-word layout — and returns the word-0 half of
+// the slice-9 2-word truecolor cell with fg resolved via the
+// session palette.  Used by the test harness + a few call sites
+// that still want the "blank cell with glyph X" pattern without
+// touching word 1 (word 1 should be written separately to set
+// background; the back-compat caller's blank bg behaviour is
+// preserved because grid_set leaves word 1 alone).
+fn pack_cell(glyph: Int, fg_idx: Int, bg_idx: Int, attrs: Int) -> Int [io]
+  let fg_rgb = novo_term_palette_lookup_h(fg_idx)
+  pack_word0(glyph, attrs, fg_rgb)
+
+@ffi("novo_term_palette_lookup")
+fn novo_term_palette_lookup_h(idx: Int) -> Int [io]
+
+// ── Grid ────────────────────────────────────────────────────────
+
+struct Grid
+  rows: Int
+  cols: Int
+  cursor_row: Int
+  cursor_col: Int
+  fg: Int
+  bg: Int
+  attrs: Int
+  cells: Int        // handle from array_i64_alloc_h — ACTIVE buffer
+  alt_meta: Int     // 8-slot i64 array (alt-screen + saved state)
+  scrollback: Int   // i64 array — scrollback ring + view state
+
+// Slice 2b/alt-screen: alt_meta side-array holds the state that
+// only applies when DEC ?1049/?1047/?47 toggling is in play.
+// Slice 6+/DECSTBM extended slots 8-9 for the scroll region
+// (top, bottom — inclusive row indices; default 0..rows-1 =
+// "no region, scroll the whole grid").  Re-using the same side-
+// array avoids adding a third handle field to the Grid struct.
+//
+// Slot layout:
+//   0  primary cells handle  (saved when alt is active, 0 otherwise)
+//   1  alt cells handle      (lazily allocated on first ?1049h)
+//   2  using_alt flag        (0 = primary active, 1 = alt active)
+//   3  saved cursor_row
+//   4  saved cursor_col
+//   5  saved fg
+//   6  saved bg
+//   7  saved attrs
+//   8  scroll_region top    (inclusive, 0-indexed)
+//   9  scroll_region bottom (inclusive, 0-indexed)
+//  10  autowrap (DECAWM) flag (0 = off, 1 = on — default 1)
+//  11  wrap_pending flag     — xterm "right-margin pending wrap":
+//                              set when the last col is written
+//                              but the cursor stays at cols-1
+//                              instead of wrapping immediately.
+//                              The next printable char triggers
+//                              the wrap; any explicit cursor move
+//                              (CUP, BS, CR, LF, etc.) clears it.
+//                              Without this, fully-filled rows
+//                              double-advance on the next LF (one
+//                              from the wrap we did eagerly, one
+//                              from the LF itself) — rows below
+//                              shift by 1 per fully-filled row
+//                              above them.
+//  12  bracketed_paste flag  — set by DECSET 2004 / cleared by
+//                              DECRST 2004.  When set, the paste
+//                              handlers (kind 25 / 26) wrap the
+//                              pasted bytes in `ESC [ 200 ~` /
+//                              `ESC [ 201 ~` envelopes so apps
+//                              like nvim, zsh, fish can tell
+//                              "user pasted N bytes" from "user
+//                              typed N bytes individually" (the
+//                              former should skip indent/abbrev
+//                              expansion / etc.).
+//  13  cursor_shape          — DECSCUSR (CSI Ps SP q) cursor
+//                              style: 0/1 = blinking block,
+//                              2 = steady block (default),
+//                              3 = blinking underline,
+//                              4 = steady underline,
+//                              5 = blinking bar,
+//                              6 = steady bar.  vim / nvim
+//                              toggle this between modes (block
+//                              normal, bar insert, underline
+//                              replace) so the user gets visual
+//                              feedback on mode.
+//  14  mouse_mode bitmask    — DECSET/RST 1000/1002/1003/1006.
+//                              bit 0 = report-clicks (1000),
+//                              bit 1 = button-event-track (1002),
+//                              bit 2 = any-motion-track (1003),
+//                              bit 3 = SGR encoding (1006).
+//                              Apps that enable these expect us
+//                              to forward mouse events as CSI
+//                              sequences to the PTY (vim's :set
+//                              mouse=a, htop / lazygit click
+//                              handling).  Shift held overrides
+//                              the forwarding — local selection
+//                              still works.
+fn alt_meta_slots() -> Int
+  15
+
+// Slice 2b/scrollback: side-array layout for the scrollback ring
+// buffer + view state.  Hard-coded capacity for v1 (1000 lines —
+// covers a normal shell session's history; config knob can come
+// later).  Slot layout:
+//
+//   0  capacity (rows)
+//   1  head (physical index of OLDEST row in the ring)
+//   2  count (rows currently stored, 0..capacity)
+//   3  view_offset (lines back from live; 0 = top of live grid)
+//   4  cols (saved at init; mostly redundant with g.cols)
+//   5..  cell data, capacity × cols i64 cells, row-major
+//
+// Layout invariant: logical row L (0 = oldest stored) lives at
+// physical ring index P = (head + L) % capacity, and cell
+// (L, C) lives at slot 5 + P * cols + C.
+
+fn scrollback_capacity() -> Int
+  1000
+
+fn sb_meta_slots() -> Int
+  5
+
+fn scrollback_cap(sb: Int) -> Int [io]
+  array_i64_get_h(sb, 0)
+
+fn scrollback_head(sb: Int) -> Int [io]
+  array_i64_get_h(sb, 1)
+
+fn scrollback_count(sb: Int) -> Int [io]
+  array_i64_get_h(sb, 2)
+
+fn scrollback_view_offset(sb: Int) -> Int [io]
+  array_i64_get_h(sb, 3)
+
+fn scrollback_cols(sb: Int) -> Int [io]
+  array_i64_get_h(sb, 4)
+
+fn scrollback_set_view_offset(sb: Int, off: Int) [io]
+  array_i64_set_h(sb, 3, off)
+
+// Push one row of `cols` cells from a source array (typically the
+// row about to fall off the top of the live grid via scroll_up).
+// `src_handle` is an i64-array handle; cells [src_offset ..
+// src_offset+cols) are copied.  Advances head when count was
+// already at capacity (overwriting the oldest row).
+// Slice 9 truecolor: scrollback stores 2 i64s per cell (same as
+// the live grid).  src_offset is a cell-index (not a slot offset);
+// copies 2 i64s per cell.
+fn scrollback_push_row(sb: Int, src_handle: Int, src_offset: Int) [io]
+  let cap   = scrollback_cap(sb)
+  let cols  = scrollback_cols(sb)
+  let head  = scrollback_head(sb)
+  let cnt   = scrollback_count(sb)
+  let target_p = if cnt < cap
+    (head + cnt) % cap
+  else
+    head
+  // Each cell = 2 i64s; row offset within ring = p * cols * 2.
+  let base = sb_meta_slots() + target_p * cols * 2
+  let mut c = 0
+  while c < cols
+    let s_idx = (src_offset + c) * 2
+    array_i64_set_h(sb, base + c * 2,     array_i64_get_h(src_handle, s_idx))
+    array_i64_set_h(sb, base + c * 2 + 1, array_i64_get_h(src_handle, s_idx + 1))
+    c = c + 1
+  if cnt < cap
+    array_i64_set_h(sb, 2, cnt + 1)
+  else
+    array_i64_set_h(sb, 1, (head + 1) % cap)
+
+// Read word 0 of cell at logical row L (0 = oldest stored), column C.
+// Returns blank word 0 if out of range.
+fn scrollback_get_cell(sb: Int, l: Int, c: Int) -> Int [io]
+  let cnt  = scrollback_count(sb)
+  let cols = scrollback_cols(sb)
+  if l < 0 or l >= cnt or c < 0 or c >= cols
+    blank_word0()
+  else
+    let cap = scrollback_cap(sb)
+    let head = scrollback_head(sb)
+    let p = (head + l) % cap
+    let slot = sb_meta_slots() + p * cols * 2 + c * 2
+    array_i64_get_h(sb, slot)
+
+// Read word 1 (bg RGB) of cell at logical row L, column C.
+fn scrollback_get_cell_w1(sb: Int, l: Int, c: Int) -> Int [io]
+  let cnt  = scrollback_count(sb)
+  let cols = scrollback_cols(sb)
+  if l < 0 or l >= cnt or c < 0 or c >= cols
+    blank_word1()
+  else
+    let cap = scrollback_cap(sb)
+    let head = scrollback_head(sb)
+    let p = (head + l) % cap
+    let slot = sb_meta_slots() + p * cols * 2 + c * 2
+    array_i64_get_h(sb, slot + 1)
+
+// Allocate a scrollback array sized for cap rows × cols cells.
+fn scrollback_new(cap: Int, cols: Int) -> Int [io]
+  // Slice 9 truecolor: scrollback now stores 2 i64s per cell, so
+  // ring storage is cap × cols × 2 (was cap × cols).
+  let n_slots = sb_meta_slots() + cap * cols * 2
+  let h = array_i64_alloc_h(n_slots)
+  array_i64_set_h(h, 0, cap)
+  array_i64_set_h(h, 1, 0)
+  array_i64_set_h(h, 2, 0)
+  array_i64_set_h(h, 3, 0)
+  array_i64_set_h(h, 4, cols)
+  h
+
+// Allocate a rows×cols grid pre-filled with blank cells.  Cursor
+// starts at (0, 0).  SGR state at defaults.  Caller must
+// eventually `grid.grid_drop(g)` to release the backing arrays.
+fn grid_new(rows: Int, cols: Int) -> Grid [io]
+  // Slice 9 truecolor: 2 i64s per cell.
+  let n_cells = rows * cols
+  let n = n_cells * 2
+  let h = array_i64_alloc_h(n)
+  let bw0 = blank_word0()
+  let bw1 = blank_word1()
+  let mut i = 0
+  while i < n_cells
+    array_i64_set_h(h, 2 * i,     bw0)
+    array_i64_set_h(h, 2 * i + 1, bw1)
+    i = i + 1
+  let meta = array_i64_alloc_h(alt_meta_slots())
+  for i in 0..alt_meta_slots()
+    array_i64_set_h(meta, i, 0)
+  // DECSTBM defaults: scroll region = whole grid (0..rows-1).
+  array_i64_set_h(meta, 8, 0)
+  array_i64_set_h(meta, 9, rows - 1)
+  // DECAWM default: autowrap ON (matches xterm / vt100).
+  array_i64_set_h(meta, 10, 1)
+  // wrap_pending starts clear.
+  array_i64_set_h(meta, 11, 0)
+  // bracketed_paste default OFF (matches xterm; apps opt in
+  // via DECSET 2004 in their startup sequence).
+  array_i64_set_h(meta, 12, 0)
+  // cursor_shape default = 2 (steady block, xterm default).
+  array_i64_set_h(meta, 13, 2)
+  // mouse_mode default = 0 (no tracking).
+  array_i64_set_h(meta, 14, 0)
+  let sb = scrollback_new(scrollback_capacity(), cols)
+  Grid {
+    rows: rows, cols: cols,
+    cursor_row: 0, cursor_col: 0,
+    // Slice 9 truecolor: Grid.fg/.bg now hold 24-bit RGB
+    // (previously 8-bit palette indices).
+    fg: default_fg_rgb(), bg: default_bg_rgb(), attrs: 0,
+    cells: h, alt_meta: meta, scrollback: sb,
+  }
+
+// Release the backing arrays.  Safe to call multiple times — the
+// stdlib's array drop is permissive on stale handles.  Releases
+// both the active cells AND any lazy-allocated alt buffer + the
+// alt_meta side-array + the scrollback ring.
+fn grid_drop(g: Grid) [io]
+  let alt = array_i64_get_h(g.alt_meta, 1)
+  let primary_saved = array_i64_get_h(g.alt_meta, 0)
+  if alt != 0
+    array_i64_drop_h(alt)
+  if primary_saved != 0 and primary_saved != g.cells
+    array_i64_drop_h(primary_saved)
+  array_i64_drop_h(g.cells)
+  array_i64_drop_h(g.alt_meta)
+  array_i64_drop_h(g.scrollback)
+
+fn grid_rows(g: Grid) -> Int
+  g.rows
+fn grid_cols(g: Grid) -> Int
+  g.cols
+fn grid_cursor_row(g: Grid) -> Int
+  g.cursor_row
+fn grid_cursor_col(g: Grid) -> Int
+  g.cursor_col
+
+// Slice 9 truecolor: cells are now 2 i64s each.  `grid_idx`
+// returns the linear cell index (row * cols + col); the storage
+// offsets for word 0 / word 1 are 2*idx and 2*idx+1.
+fn grid_idx(g: Grid, row: Int, col: Int) -> Int
+  row * g.cols + col
+
+// Read word 0 of the cell at (row, col).  Holds glyph + attrs +
+// fg RGB.  Out-of-range coords return a blank word — makes
+// rendering loops safe against transient sub-frame state.
+fn grid_get(g: Grid, row: Int, col: Int) -> Int [io]
+  if row < 0 or row >= g.rows or col < 0 or col >= g.cols
+    blank_word0()
+  else
+    array_i64_get_h(g.cells, 2 * grid_idx(g, row, col))
+
+// Read word 1 of the cell at (row, col).  Holds bg RGB.
+fn grid_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
+  if row < 0 or row >= g.rows or col < 0 or col >= g.cols
+    blank_word1()
+  else
+    array_i64_get_h(g.cells, 2 * grid_idx(g, row, col) + 1)
+
+// Write word 0 of the cell at (row, col).  Out-of-range coords
+// are silently ignored (matches xterm: writes past the right
+// margin are clipped, not errors).  Callers that change colors
+// MUST pair with grid_set_w1 to keep the cell consistent.
+fn grid_set(g: Grid, row: Int, col: Int, packed: Int) -> Grid [io]
+  if row >= 0 and row < g.rows and col >= 0 and col < g.cols
+    array_i64_set_h(g.cells, 2 * grid_idx(g, row, col), packed)
+  g
+
+// Write word 1 of the cell at (row, col).
+fn grid_set_w1(g: Grid, row: Int, col: Int, packed: Int) -> Grid [io]
+  if row >= 0 and row < g.rows and col >= 0 and col < g.cols
+    array_i64_set_h(g.cells, 2 * grid_idx(g, row, col) + 1, packed)
+  g
+
+// Convenience: write both words atomically.
+fn grid_set_pair(g: Grid, row: Int, col: Int, w0: Int, w1: Int) -> Grid [io]
+  if row >= 0 and row < g.rows and col >= 0 and col < g.cols
+    let idx = 2 * grid_idx(g, row, col)
+    array_i64_set_h(g.cells, idx,     w0)
+    array_i64_set_h(g.cells, idx + 1, w1)
+  g
+
+// Slice 9 truecolor helpers — operate on the raw cells array
+// (handle + linear cell index) instead of going through Grid.
+// Used by the scroll / erase / line-shift loops below that copy
+// or blank cells in tight inner loops.  Both words moved per
+// cell so colors don't desync from glyphs.
+fn cells_copy(dst: Int, dst_cell_idx: Int, src: Int, src_cell_idx: Int) [io]
+  let s = 2 * src_cell_idx
+  let d = 2 * dst_cell_idx
+  array_i64_set_h(dst, d,     array_i64_get_h(src, s))
+  array_i64_set_h(dst, d + 1, array_i64_get_h(src, s + 1))
+
+fn cells_blank(arr: Int, cell_idx: Int, blank_w0: Int, blank_w1: Int) [io]
+  let d = 2 * cell_idx
+  array_i64_set_h(arr, d,     blank_w0)
+  array_i64_set_h(arr, d + 1, blank_w1)
+
+// ── Cursor / SGR mutators ──────────────────────────────────────
+
+// Clamp a row to [0, rows-1] (used after parser-driven moves so
+// out-of-range CUP doesn't crash).
+fn clamp(v: Int, lo: Int, hi: Int) -> Int
+  if v < lo
+    lo
+  elif v > hi
+    hi
+  else
+    v
+
+fn grid_cursor_set(g: Grid, row: Int, col: Int) -> Grid [io]
+  // Slice 9 (deferred wrap): any explicit cursor positioning
+  // clears the right-margin pending-wrap flag.  Otherwise the
+  // saved wrap state would fire on the next print after a CUP
+  // that landed at col cols-1, causing a spurious row advance.
+  array_i64_set_h(g.alt_meta, 11, 0)
+  Grid { rows: g.rows, cols: g.cols,
+         cursor_row: clamp(row, 0, g.rows - 1),
+         cursor_col: clamp(col, 0, g.cols - 1),
+         fg: g.fg, bg: g.bg, attrs: g.attrs,
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+
+fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io]
+  grid_cursor_set(g, g.cursor_row + dr, g.cursor_col + dc)
+
+// Slice 9 truecolor: fg/bg now take 24-bit RGB (was 8-bit
+// palette index).  Parser resolves indexed colors to RGB via
+// novo_term_palette_lookup before calling these.
+fn grid_set_fg(g: Grid, fg_rgb: Int) -> Grid
+  Grid { rows: g.rows, cols: g.cols,
+         cursor_row: g.cursor_row, cursor_col: g.cursor_col,
+         fg: bits.band(fg_rgb, 16777215), bg: g.bg, attrs: g.attrs,
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+
+fn grid_set_bg(g: Grid, bg_rgb: Int) -> Grid
+  Grid { rows: g.rows, cols: g.cols,
+         cursor_row: g.cursor_row, cursor_col: g.cursor_col,
+         fg: g.fg, bg: bits.band(bg_rgb, 16777215), attrs: g.attrs,
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+
+fn grid_set_attrs(g: Grid, attrs: Int) -> Grid
+  Grid { rows: g.rows, cols: g.cols,
+         cursor_row: g.cursor_row, cursor_col: g.cursor_col,
+         fg: g.fg, bg: g.bg, attrs: bits.band(attrs, 255),
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+
+// Slice 9: SGR 0 (reset) reads runtime defaults so OSC 10/11
+// changes take effect on the very next attribute reset (apps
+// follow OSC 10/11 with a screen clear + reset typically).
+@ffi("novo_term_default_fg_get")
+fn _td_fg_get_h() -> Int [io]
+
+@ffi("novo_term_default_bg_get")
+fn _td_bg_get_h() -> Int [io]
+
+fn grid_sgr_reset(g: Grid) -> Grid [io]
+  Grid { rows: g.rows, cols: g.cols,
+         cursor_row: g.cursor_row, cursor_col: g.cursor_col,
+         fg: _td_fg_get_h(), bg: _td_bg_get_h(), attrs: 0,
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+
+// ── Scroll ─────────────────────────────────────────────────────
+
+// Scroll-region accessors.  Default is 0..rows-1 (whole grid).
+// Set via DECSTBM (`\e[Pt;Pb r`) — Neovim splits rely on this to
+// scroll one pane without disturbing others.
+fn grid_region_top(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 8)
+
+fn grid_region_bottom(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 9)
+
+// Set the scroll region.  top/bottom are 0-indexed inclusive
+// row numbers.  Clamps into [0, rows-1] and ensures top ≤
+// bottom.  No-op if top ≥ rows (defensive — some sequences
+// arrive with stale row counts post-resize).
+fn grid_set_scroll_region(g: Grid, top: Int, bottom: Int) -> Grid [io]
+  let t = if top    < 0           then 0           else top
+  let b = if bottom >= g.rows     then g.rows - 1  else bottom
+  if t >= g.rows or t > b
+    g
+  else
+    array_i64_set_h(g.alt_meta, 8, t)
+    array_i64_set_h(g.alt_meta, 9, b)
+    g
+
+// Region-aware scroll.  Shifts rows region_top+1..region_bottom
+// up by one within the region, leaving everything outside it
+// untouched; row region_bottom fills with blank.  When the
+// region is the whole grid AND we're in the primary buffer,
+// the about-to-be-discarded top row enters the scrollback ring
+// (xterm convention — partial-region scrolls don't push).
+fn grid_scroll_up(g: Grid) -> Grid [io]
+  let top    = grid_region_top(g)
+  let bot    = grid_region_bottom(g)
+  let using_alt = array_i64_get_h(g.alt_meta, 2)
+  let full_region = top == 0 and bot == g.rows - 1
+  if using_alt == 0 and full_region
+    scrollback_push_row(g.scrollback, g.cells, grid_idx(g, 0, 0))
+  let bw0 = blank_word0()
+  let bw1 = blank_word1()
+  for r in top..bot
+    for c in 0..g.cols
+      cells_copy(g.cells, grid_idx(g, r, c),
+                  g.cells, grid_idx(g, r + 1, c))
+  // Blank the now-empty BOTTOM ROW OF THE REGION, not the grid's
+  // last row — that would punch a hole below the region for any
+  // partial-region scroll.
+  for c in 0..g.cols
+    cells_blank(g.cells, grid_idx(g, bot, c), bw0, bw1)
+  g
+
+// ── Character writes ───────────────────────────────────────────
+
+// Put a printable glyph at the cursor, advance the cursor one
+// column.  Wraps to the next row at the right margin; scrolls
+// when the cursor crosses the bottom edge.  Non-printable
+// (glyph < 32) is dropped — control bytes route through the
+// dedicated handlers below.
+fn grid_put_char(g: Grid, glyph: Int) -> Grid [io]
+  // Slice 2b: accept any positive codepoint; the renderer's
+  // atlas-mapping decides which slot to draw (printable ASCII,
+  // mapped Powerline range, or fallback to space).  Negative /
+  // zero / DEL is still rejected here so the cursor doesn't
+  // advance for stray control values.
+  if glyph <= 0 or glyph == 127
+    g
+  else
+    // Slice 2b/scrollback: any shell-driven output snaps the
+    // view back to the live grid (xterm convention) — otherwise
+    // the user would scroll up, ls would run, and they'd still
+    // be looking at the old content with no idea ls fired.
+    scrollback_set_view_offset(g.scrollback, 0)
+    // Slice 9 (deferred wrap): xterm's "right-margin pending
+    // wrap" semantics.  If the previous put_char filled the last
+    // column, the cursor stayed pegged at cols-1 with wrap_pending
+    // set.  Trigger the wrap NOW, before printing the new char.
+    // Without this, fully-filled rows + LF advance the cursor
+    // by 2 rows total (eager-wrap + LF), shifting every row below
+    // by 1 — caught reproducing nvim's redraw-after-telescope
+    // path where each line filled to the right margin.
+    let g0 = if grid_wrap_pending(g) == 1 and grid_autowrap(g) == 1
+      let bot = grid_region_bottom(g)
+      let g_wrap = if g.cursor_row >= bot
+        let gs = grid_scroll_up(g)
+        grid_cursor_set(gs, bot, 0)
+      else
+        grid_cursor_set(g, g.cursor_row + 1, 0)
+      grid_clear_wrap_pending(g_wrap)
+    else
+      grid_clear_wrap_pending(g)
+    // Slice 9 truecolor: write both words.  W0 carries glyph +
+    // attrs + fg_rgb; W1 carries bg_rgb.  g0.fg / g0.bg are
+    // already 24-bit RGB after the parser-side palette lookup.
+    let w0 = pack_word0(glyph, g0.attrs, g0.fg)
+    let w1 = pack_word1(g0.bg)
+    let g2 = grid_set_pair(g0, g0.cursor_row, g0.cursor_col, w0, w1)
+    let next_col = g2.cursor_col + 1
+    if next_col >= g.cols
+      // DECAWM off: peg at right margin without setting wrap-
+      // pending — subsequent writes overwrite this same cell.
+      let aw = grid_autowrap(g2)
+      if aw == 0
+        grid_cursor_set(g2, g2.cursor_row, g.cols - 1)
+      else
+        // DECAWM on: set wrap-pending and keep cursor at cols-1.
+        // The actual row advance happens on the NEXT printable
+        // char (above), matching xterm's deferred-wrap semantics
+        // that nvim relies on.
+        let g_keep = grid_cursor_set(g2, g2.cursor_row, g.cols - 1)
+        grid_set_wrap_pending(g_keep)
+    else
+      grid_cursor_set(g2, g2.cursor_row, next_col)
+
+// DECAWM accessor + setter.  Slot 10 of alt_meta; defaults to 1
+// (autowrap on) per xterm.  When 0, grid_put_char clamps cursor
+// at the right margin instead of wrapping.
+fn grid_autowrap(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 10)
+
+fn grid_set_autowrap(g: Grid, on: Bool) -> Grid [io]
+  array_i64_set_h(g.alt_meta, 10, if on then 1 else 0)
+  g
+
+// wrap_pending accessor + mutators.  Slot 11; set when a put_char
+// fills the rightmost column, cleared by the next put_char (after
+// triggering the deferred wrap) or by any explicit cursor move.
+fn grid_wrap_pending(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 11)
+
+fn grid_set_wrap_pending(g: Grid) -> Grid [io]
+  array_i64_set_h(g.alt_meta, 11, 1)
+  g
+
+fn grid_clear_wrap_pending(g: Grid) -> Grid [io]
+  array_i64_set_h(g.alt_meta, 11, 0)
+  g
+
+// Bracketed-paste accessor + setter.  Slot 12; toggled by
+// DECSET/RST 2004.  Read by the render.nv paste handlers to
+// decide whether to wrap pasted bytes in ESC [200~ … ESC [201~.
+fn grid_bracketed_paste(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 12)
+
+fn grid_set_bracketed_paste(g: Grid, on: Bool) -> Grid [io]
+  array_i64_set_h(g.alt_meta, 12, if on then 1 else 0)
+  g
+
+// DECSCUSR cursor-shape accessor + setter.  Shape codes match
+// the xterm spec (0/1 blink block, 2 steady block, ..., 6 steady
+// bar).  Renderer reads via grid_cursor_shape and branches on
+// the value when painting the cursor cell.
+fn grid_cursor_shape(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 13)
+
+fn grid_set_cursor_shape(g: Grid, shape: Int) -> Grid [io]
+  let s = if shape < 0 or shape > 6 then 2 else shape
+  array_i64_set_h(g.alt_meta, 13, s)
+  g
+
+// Mouse-mode bitmask accessor + setter.  Caller (parser) ORs
+// or ANDs in individual bits via grid_mouse_mode_bit_on/off
+// for the DECSET/RST entry points.
+fn grid_mouse_mode(g: Grid) -> Int [io]
+  array_i64_get_h(g.alt_meta, 14)
+
+// Pure mouse-tracking gate + SGR button-byte, split out of
+// render.forward_mouse_event so it is unit-testable without a PTY.
+// Given the active mouse-mode bitmask and a compact modifier+button
+// mask, return the SGR button byte to emit, or -1 when the event must
+// NOT be forwarded (so the terminal's local selection handles it).
+//
+//   mode bits: 1 = 1000 (report clicks), 2 = 1002 (report drag =
+//              motion while a button is held), 4 = 1003 (report ANY
+//              motion incl. idle hover), 8 = 1006 (SGR framing —
+//              affects only the ESC[< wrapper, not this byte).
+//   mods bits: 0 = Shift, 1 = Ctrl, 2 = Alt,
+//              3/4/5 = left/middle/right button currently HELD.
+//   motion:    true for a MotionNotify (drag / hover).
+//   button:    SGR button for a press/release (0=left,1=mid,2=right).
+//
+// The fix this encodes: a motion event's button is the *held* button
+// (or 3 = "no button" for idle hover), NOT a hardcoded left-button.
+// Previously every hover was forwarded as a left-button drag, so apps
+// with 1002/1003 tracking (zellij) kept extending their selection when
+// the mouse merely moved with no button down.
+fn grid_mouse_sgr_code(mode: Int, mods: Int, motion: Bool, button: Int) -> Int
+  let shift_held = mods % 2 == 1
+  if mode == 0 or shift_held
+    0 - 1
+  else
+    // Which button is physically held (bits 3/4/5): left→0, mid→1,
+    // right→2, none→3.
+    let held = if bits.band(mods, 8) != 0
+      0
+    elif bits.band(mods, 16) != 0
+      1
+    elif bits.band(mods, 32) != 0
+      2
+    else
+      3
+    let report_drag   = bits.band(mode, 2) != 0
+    let report_any    = bits.band(mode, 4) != 0
+    let report_clicks = bits.band(mode, 7) != 0
+    let eff_button = if motion then held else button
+    let want = if motion
+      if held != 3 then report_drag or report_any else report_any
+    else
+      report_clicks
+    if not want
+      0 - 1
+    else
+      // SGR modifier offsets: +8 meta, +16 ctrl, +32 motion.
+      let ctrl_bit = if bits.band(mods, 2) != 0 then 16 else 0
+      let alt_bit  = if bits.band(mods, 4) != 0 then 8  else 0
+      let mot_bit  = if motion then 32 else 0
+      eff_button + ctrl_bit + alt_bit + mot_bit
+
+fn grid_mouse_mode_bit_on(g: Grid, bit: Int) -> Grid [io]
+  let cur = array_i64_get_h(g.alt_meta, 14)
+  array_i64_set_h(g.alt_meta, 14, bits.bor(cur, bit))
+  g
+
+fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io]
+  let cur = array_i64_get_h(g.alt_meta, 14)
+  // Clear `bit`: AND with ~bit.  No bitwise-not in Novo std —
+  // use XOR with all-ones-mask = ~bit when current bit is set.
+  // Simpler: subtract if present.
+  let new = if bits.band(cur, bit) != 0
+    cur - bit
+  else
+    cur
+  array_i64_set_h(g.alt_meta, 14, new)
+  g
+
+fn grid_backspace(g: Grid) -> Grid [io]
+  if g.cursor_col > 0
+    grid_cursor_set(g, g.cursor_row, g.cursor_col - 1)
+  else
+    g
+
+// Tab to the next 8-column stop, clipped to the right margin.
+fn grid_tab(g: Grid) -> Grid [io]
+  let next = (g.cursor_col / 8 + 1) * 8
+  let clipped = if next >= g.cols
+    g.cols - 1
+  else
+    next
+  grid_cursor_set(g, g.cursor_row, clipped)
+
+fn grid_carriage_return(g: Grid) -> Grid [io]
+  grid_cursor_set(g, g.cursor_row, 0)
+
+// Line feed.  Moves the cursor down one row.  If already on the
+// scroll-region bottom row, scrolls (within the region) and
+// stays put.  Does NOT reset the column (matches xterm — CR has
+// to follow if you want column 0).
+fn grid_line_feed(g: Grid) -> Grid [io]
+  let bot = grid_region_bottom(g)
+  if g.cursor_row >= bot
+    let g2 = grid_scroll_up(g)
+    grid_cursor_set(g2, bot, g.cursor_col)
+  else
+    grid_cursor_set(g, g.cursor_row + 1, g.cursor_col)
+
+// ── Erase ──────────────────────────────────────────────────────
+
+fn fill_row_range(g: Grid, row: Int, c0: Int, c1: Int) [io]
+  let bw0 = blank_word0()
+  let bw1 = blank_word1()
+  for c in c0..c1
+    cells_blank(g.cells, grid_idx(g, row, c), bw0, bw1)
+
+// EL — Erase in Line.  mode 0: cursor → end of line.
+// mode 1: start of line → cursor (inclusive).  mode 2: whole line.
+fn grid_erase_line(g: Grid, mode: Int) -> Grid [io]
+  if mode == 0
+    fill_row_range(g, g.cursor_row, g.cursor_col, g.cols)
+  if mode == 1
+    fill_row_range(g, g.cursor_row, 0, g.cursor_col + 1)
+  if mode == 2
+    fill_row_range(g, g.cursor_row, 0, g.cols)
+  g
+
+// ED — Erase in Display.  mode 0: cursor → end of display.
+// mode 1: start → cursor.  mode 2: whole display.
+fn grid_erase_display(g: Grid, mode: Int) -> Grid [io]
+  if mode == 0
+    fill_row_range(g, g.cursor_row, g.cursor_col, g.cols)
+    for r in g.cursor_row + 1..g.rows
+      fill_row_range(g, r, 0, g.cols)
+  if mode == 1
+    for r in 0..g.cursor_row
+      fill_row_range(g, r, 0, g.cols)
+    fill_row_range(g, g.cursor_row, 0, g.cursor_col + 1)
+  if mode == 2
+    for r in 0..g.rows
+      fill_row_range(g, r, 0, g.cols)
+  g
+
+// ── Insert / Delete (line + char) ──────────────────────────────
+//
+// Slice 6+: CSI L/M/@/P (IL / DL / ICH / DCH) + S/T (SU / SD).
+// Critical for Neovim's split-window rendering — without them
+// nvim's regional updates either fall through to full redraws
+// (slow) or land in the wrong rows + cause the "doubled content"
+// rendering bug.  All operate within the active scroll region.
+
+// IL — insert n blank lines at cursor row, push existing rows
+// down within region.  Cursor stays put (column unchanged).
+// Rows below region_bottom are unaffected.
+fn grid_insert_lines(g: Grid, n: Int) -> Grid [io]
+  if n < 1
+    g
+  else
+    let bot = grid_region_bottom(g)
+    let cur = g.cursor_row
+    if cur > bot
+      g
+    else
+      let k = if n > bot - cur + 1 then bot - cur + 1 else n
+      let bw0 = blank_word0()
+      let bw1 = blank_word1()
+      // Shift rows down: copy from (r-k) into r, working bottom-
+      // up so we don't clobber sources.  Each cell is 2 i64s now.
+      let mut r = bot
+      while r >= cur + k
+        let mut c = 0
+        while c < g.cols
+          cells_copy(g.cells, grid_idx(g, r, c),
+                      g.cells, grid_idx(g, r - k, c))
+          c = c + 1
+        r = r - 1
+      // Blank the inserted rows.
+      let mut r2 = cur
+      while r2 < cur + k
+        let mut c2 = 0
+        while c2 < g.cols
+          cells_blank(g.cells, grid_idx(g, r2, c2), bw0, bw1)
+          c2 = c2 + 1
+        r2 = r2 + 1
+      g
+
+// DL — delete n lines at cursor row, pull rows up within region.
+fn grid_delete_lines(g: Grid, n: Int) -> Grid [io]
+  if n < 1
+    g
+  else
+    let bot = grid_region_bottom(g)
+    let cur = g.cursor_row
+    if cur > bot
+      g
+    else
+      let k = if n > bot - cur + 1 then bot - cur + 1 else n
+      let bw0 = blank_word0()
+      let bw1 = blank_word1()
+      let mut r = cur
+      while r + k <= bot
+        let mut c = 0
+        while c < g.cols
+          cells_copy(g.cells, grid_idx(g, r, c),
+                      g.cells, grid_idx(g, r + k, c))
+          c = c + 1
+        r = r + 1
+      // Blank the now-empty bottom k rows of the region.
+      let mut r2 = bot - k + 1
+      while r2 <= bot
+        let mut c2 = 0
+        while c2 < g.cols
+          cells_blank(g.cells, grid_idx(g, r2, c2), bw0, bw1)
+          c2 = c2 + 1
+        r2 = r2 + 1
+      g
+
+// ECH — erase n chars at cursor (write blanks).  Cursor stays.
+// Critical for pane-aware redraws: lets apps clear specific
+// cells without `\e[K` which would extend past the pane border.
+fn grid_erase_chars(g: Grid, n: Int) -> Grid [io]
+  if n < 1
+    g
+  else
+    let row = g.cursor_row
+    let col = g.cursor_col
+    let k = if n > g.cols - col then g.cols - col else n
+    let bw0 = blank_word0()
+    let bw1 = blank_word1()
+    let mut c = col
+    while c < col + k
+      cells_blank(g.cells, grid_idx(g, row, c), bw0, bw1)
+      c = c + 1
+    g
+
+// ICH — insert n blank chars at cursor, shift right within row.
+// Cells past the right margin fall off.  Cursor unchanged.
+fn grid_insert_chars(g: Grid, n: Int) -> Grid [io]
+  if n < 1
+    g
+  else
+    let row = g.cursor_row
+    let col = g.cursor_col
+    let k = if n > g.cols - col then g.cols - col else n
+    let bw0 = blank_word0()
+    let bw1 = blank_word1()
+    // Shift right: from rightmost back to col+k.
+    let mut c = g.cols - 1
+    while c >= col + k
+      cells_copy(g.cells, grid_idx(g, row, c),
+                  g.cells, grid_idx(g, row, c - k))
+      c = c - 1
+    let mut c2 = col
+    while c2 < col + k
+      cells_blank(g.cells, grid_idx(g, row, c2), bw0, bw1)
+      c2 = c2 + 1
+    g
+
+// DCH — delete n chars at cursor, shift left within row.
+fn grid_delete_chars(g: Grid, n: Int) -> Grid [io]
+  if n < 1
+    g
+  else
+    let row = g.cursor_row
+    let col = g.cursor_col
+    let k = if n > g.cols - col then g.cols - col else n
+    let bw0 = blank_word0()
+    let bw1 = blank_word1()
+    let mut c = col
+    while c + k < g.cols
+      cells_copy(g.cells, grid_idx(g, row, c),
+                  g.cells, grid_idx(g, row, c + k))
+      c = c + 1
+    let mut c2 = g.cols - k
+    while c2 < g.cols
+      cells_blank(g.cells, grid_idx(g, row, c2), bw0, bw1)
+      c2 = c2 + 1
+    g
+
+// SU — scroll up n lines within the active region.  Same as
+// calling grid_scroll_up n times but cheaper for n>1.
+fn grid_scroll_region_up(g: Grid, n: Int) -> Grid [io]
+  let mut left = n
+  let mut g_acc = g
+  while left > 0
+    g_acc = grid_scroll_up(g_acc)
+    left = left - 1
+  g_acc
+
+// SD — scroll down n lines: insert n blank lines at region_top,
+// rows below shift down within region.  Effectively IL at the
+// top of the region.
+fn grid_scroll_region_down(g: Grid, n: Int) -> Grid [io]
+  if n < 1
+    g
+  else
+    let top = grid_region_top(g)
+    let bot = grid_region_bottom(g)
+    let k = if n > bot - top + 1 then bot - top + 1 else n
+    let bw0 = blank_word0()
+    let bw1 = blank_word1()
+    let mut r = bot
+    while r >= top + k
+      let mut c = 0
+      while c < g.cols
+        cells_copy(g.cells, grid_idx(g, r, c),
+                    g.cells, grid_idx(g, r - k, c))
+        c = c + 1
+      r = r - 1
+    let mut r2 = top
+    while r2 < top + k
+      let mut c2 = 0
+      while c2 < g.cols
+        cells_blank(g.cells, grid_idx(g, r2, c2), bw0, bw1)
+        c2 = c2 + 1
+      r2 = r2 + 1
+    g
+
+// ── Alt-screen + DECSC/DECRC ───────────────────────────────────
+//
+// Slice 2b/alt-screen: vim / less / man / htop expect an
+// "alternate screen buffer" they can use without commingling
+// with the user's prior scrollback.  Triggered by DEC private
+// modes `\e[?1049h` (enter, save cursor first) and
+// `\e[?1049l` (exit, restore cursor); older codes `?47h/l` and
+// `?1047h/l` share the same buffer but with slightly different
+// save semantics — we collapse all three onto the same "save +
+// switch + clear on enter, restore + switch back on exit" path
+// since the user-visible difference is negligible.
+//
+// Also implements DECSC (ESC 7) + DECRC (ESC 8) using the same
+// save-slot layout — `\e[?1049h` is conceptually "DECSC + switch
+// to alt + clear".  Parser dispatches DECSC/DECRC separately
+// from alt-screen toggles, but both poke meta slots 3..7.
+
+// Save current cursor + SGR state into meta slots 3..7.  No
+// buffer toggle.
+fn grid_decsc(g: Grid) -> Grid [io]
+  array_i64_set_h(g.alt_meta, 3, g.cursor_row)
+  array_i64_set_h(g.alt_meta, 4, g.cursor_col)
+  array_i64_set_h(g.alt_meta, 5, g.fg)
+  array_i64_set_h(g.alt_meta, 6, g.bg)
+  array_i64_set_h(g.alt_meta, 7, g.attrs)
+  g
+
+// Restore cursor + SGR from meta slots 3..7.  No buffer toggle.
+fn grid_decrc(g: Grid) -> Grid [io]
+  let r     = array_i64_get_h(g.alt_meta, 3)
+  let c     = array_i64_get_h(g.alt_meta, 4)
+  let fg    = array_i64_get_h(g.alt_meta, 5)
+  let bg    = array_i64_get_h(g.alt_meta, 6)
+  let attrs = array_i64_get_h(g.alt_meta, 7)
+  Grid { rows: g.rows, cols: g.cols,
+         cursor_row: clamp(r, 0, g.rows - 1),
+         cursor_col: clamp(c, 0, g.cols - 1),
+         fg: fg, bg: bg, attrs: attrs,
+         cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+
+// Allocate the alt buffer lazily (first time we enter alt).
+fn alloc_alt_buf(g: Grid) -> Int [io]
+  // Slice 9 truecolor: 2 i64s per cell.
+  let n_cells = g.rows * g.cols
+  let h = array_i64_alloc_h(n_cells * 2)
+  let bw0 = blank_word0()
+  let bw1 = blank_word1()
+  let mut i = 0
+  while i < n_cells
+    array_i64_set_h(h, 2 * i,     bw0)
+    array_i64_set_h(h, 2 * i + 1, bw1)
+    i = i + 1
+  h
+
+// Enter the alternate screen buffer.  Saves cursor + SGR,
+// stashes the primary cells handle into meta[0], swaps `cells`
+// to the alt buffer (lazy-allocate on first call), clears the
+// alt buffer, and moves cursor to (0, 0) with SGR reset.
+// Idempotent: re-entering when already in alt is a no-op clear.
+fn grid_enter_alt_screen(g: Grid) -> Grid [io]
+  let using_alt = array_i64_get_h(g.alt_meta, 2)
+  if using_alt == 1
+    // Already in alt — treat as a fresh enter: clear + reset
+    // cursor.  (Some apps assume re-entry resets.)
+    let n_cells = g.rows * g.cols
+    let bw0 = blank_word0()
+    let bw1 = blank_word1()
+    let mut i = 0
+    while i < n_cells
+      array_i64_set_h(g.cells, 2 * i,     bw0)
+      array_i64_set_h(g.cells, 2 * i + 1, bw1)
+      i = i + 1
+    Grid { rows: g.rows, cols: g.cols,
+           cursor_row: 0, cursor_col: 0,
+           fg: default_fg_rgb(), bg: default_bg_rgb(), attrs: 0,
+           cells: g.cells, alt_meta: g.alt_meta, scrollback: g.scrollback }
+  else
+    // Save cursor + SGR for the eventual exit.
+    array_i64_set_h(g.alt_meta, 3, g.cursor_row)
+    array_i64_set_h(g.alt_meta, 4, g.cursor_col)
+    array_i64_set_h(g.alt_meta, 5, g.fg)
+    array_i64_set_h(g.alt_meta, 6, g.bg)
+    array_i64_set_h(g.alt_meta, 7, g.attrs)
+    // Lazy-allocate the alt buffer.
+    let existing_alt = array_i64_get_h(g.alt_meta, 1)
+    let alt_h = if existing_alt == 0
+      let h = alloc_alt_buf(g)
+      array_i64_set_h(g.alt_meta, 1, h)
+      h
+    else
+      existing_alt
+    // Stash primary so exit can swap back.
+    array_i64_set_h(g.alt_meta, 0, g.cells)
+    array_i64_set_h(g.alt_meta, 2, 1)
+    // Reset scroll region to the full grid — xterm semantics
+    // are "region is per-buffer", and the simplest faithful
+    // approximation is "switch buffer = reset region".
+    // Otherwise a region set in primary leaks into alt and
+    // breaks nvim/vim/htop's first redraw.
+    array_i64_set_h(g.alt_meta, 8, 0)
+    array_i64_set_h(g.alt_meta, 9, g.rows - 1)
+    // Clear the alt buffer (standard ?1049 behavior).
+    let n_cells = g.rows * g.cols
+    let bw0 = blank_word0()
+    let bw1 = blank_word1()
+    let mut i = 0
+    while i < n_cells
+      array_i64_set_h(alt_h, 2 * i,     bw0)
+      array_i64_set_h(alt_h, 2 * i + 1, bw1)
+      i = i + 1
+    Grid { rows: g.rows, cols: g.cols,
+           cursor_row: 0, cursor_col: 0,
+           fg: default_fg_rgb(), bg: default_bg_rgb(), attrs: 0,
+           cells: alt_h, alt_meta: g.alt_meta, scrollback: g.scrollback }
+
+// Exit the alternate screen buffer.  Swaps `cells` back to the
+// primary handle stashed in meta[0], restores saved cursor +
+// SGR.  No-op if we're already in primary mode (defensive — the
+// terminal may legitimately receive duplicate ?1049l).
+fn grid_exit_alt_screen(g: Grid) -> Grid [io]
+  let using_alt = array_i64_get_h(g.alt_meta, 2)
+  if using_alt != 1
+    g
+  else
+    let primary = array_i64_get_h(g.alt_meta, 0)
+    if primary == 0
+      g
+    else
+      let r     = array_i64_get_h(g.alt_meta, 3)
+      let c     = array_i64_get_h(g.alt_meta, 4)
+      let fg    = array_i64_get_h(g.alt_meta, 5)
+      let bg    = array_i64_get_h(g.alt_meta, 6)
+      let attrs = array_i64_get_h(g.alt_meta, 7)
+      array_i64_set_h(g.alt_meta, 0, 0)
+      array_i64_set_h(g.alt_meta, 2, 0)
+      // Reset scroll region on the way back to primary too —
+      // same per-buffer semantics as on enter.
+      array_i64_set_h(g.alt_meta, 8, 0)
+      array_i64_set_h(g.alt_meta, 9, g.rows - 1)
+      Grid { rows: g.rows, cols: g.cols,
+             cursor_row: clamp(r, 0, g.rows - 1),
+             cursor_col: clamp(c, 0, g.cols - 1),
+             fg: fg, bg: bg, attrs: attrs,
+             cells: primary, alt_meta: g.alt_meta, scrollback: g.scrollback }
+
+// ── Resize ─────────────────────────────────────────────────────
+//
+// Slice 6+ window resize.  Allocate a fresh cells array sized
+// for the new (rows, cols), copy as much of the old content as
+// fits (top-left aligned), drop the old array.  Also resizes the
+// alt buffer if it was lazily allocated.  Cursor clamped into
+// the new bounds.  Scrollback ring keeps its existing rows (they
+// may be wider than the new cols — those just get clipped at
+// render time via `grid_view_get`'s bounds check).
+//
+// Returns a new Grid with the new dims + new cells handle.
+
+fn alloc_blank_cells(rows: Int, cols: Int) -> Int [io]
+  let n_cells = rows * cols
+  let h = array_i64_alloc_h(n_cells * 2)
+  let bw0 = blank_word0()
+  let bw1 = blank_word1()
+  let mut i = 0
+  while i < n_cells
+    array_i64_set_h(h, 2 * i,     bw0)
+    array_i64_set_h(h, 2 * i + 1, bw1)
+    i = i + 1
+  h
+
+// Copy `old_cells` into `new_cells` cell-by-cell, top-left
+// aligned, clipping at the smaller of (old_rows/cols,
+// new_rows/cols).  Slice 9 truecolor: 2 i64s per cell.
+fn copy_cells(old_cells: Int, old_cols: Int,
+               new_cells: Int, new_cols: Int,
+               copy_rows: Int, copy_cols: Int) [io]
+  let mut r = 0
+  while r < copy_rows
+    let mut c = 0
+    while c < copy_cols
+      let s_idx = (r * old_cols + c) * 2
+      let d_idx = (r * new_cols + c) * 2
+      array_i64_set_h(new_cells, d_idx,     array_i64_get_h(old_cells, s_idx))
+      array_i64_set_h(new_cells, d_idx + 1, array_i64_get_h(old_cells, s_idx + 1))
+      c = c + 1
+    r = r + 1
+
+fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io]
+  if new_rows == g.rows and new_cols == g.cols
+    g
+  else
+    // DECSTBM scroll-region resets to the full new grid on
+    // resize.  Apps re-issue their region after SIGWINCH; until
+    // they do, partial-region behavior post-resize is the wrong
+    // default.  User reported scroll glitches after resize+open
+    // file+scroll in nvim — the stale region was the culprit.
+    array_i64_set_h(g.alt_meta, 8, 0)
+    array_i64_set_h(g.alt_meta, 9, new_rows - 1)
+    let copy_r = if new_rows < g.rows then new_rows else g.rows
+    let copy_c = if new_cols < g.cols then new_cols else g.cols
+    // Snapshot the alt + primary-saved handles BEFORE we drop
+    // g.cells.  In alt-screen mode (nvim / less / htop) g.cells
+    // IS alt_meta[1] — dropping g.cells first would invalidate
+    // alt_meta[1], and the later read+drop would touch freed
+    // memory (use-after-free + double-free → wgpu crash on the
+    // next pack_cells reading from the stale region).  Capture
+    // here and treat each slot exactly once.
+    let alt_old           = array_i64_get_h(g.alt_meta, 1)
+    let primary_saved     = array_i64_get_h(g.alt_meta, 0)
+    let using_alt         = array_i64_get_h(g.alt_meta, 2)
+    let active_is_alt     = using_alt == 1 and alt_old == g.cells
+    let active_is_primary = primary_saved == g.cells
+    // Replace the active buffer.  Old cells handle gets freed;
+    // alt_meta + scrollback handles outlive resize.
+    let new_active = alloc_blank_cells(new_rows, new_cols)
+    copy_cells(g.cells, g.cols, new_active, new_cols, copy_r, copy_c)
+    array_i64_drop_h(g.cells)
+    if active_is_alt
+      // The alt buffer was just freed via g.cells — reuse new_active
+      // as both the new alt handle AND the new active cells.
+      // Without this, the next read of alt_meta[1] returns the
+      // stale handle.
+      array_i64_set_h(g.alt_meta, 1, new_active)
+    elif alt_old != 0
+      // Alt buffer exists but isn't active (we're in primary).  Resize
+      // it independently so re-entering alt after the resize finds
+      // its content at the new dims.
+      let new_alt = alloc_blank_cells(new_rows, new_cols)
+      copy_cells(alt_old, g.cols, new_alt, new_cols, copy_r, copy_c)
+      array_i64_drop_h(alt_old)
+      array_i64_set_h(g.alt_meta, 1, new_alt)
+    // Same dance for the primary-saved slot (set only while in alt).
+    if active_is_primary
+      array_i64_set_h(g.alt_meta, 0, new_active)
+    elif primary_saved != 0
+      let new_saved = alloc_blank_cells(new_rows, new_cols)
+      copy_cells(primary_saved, g.cols, new_saved, new_cols, copy_r, copy_c)
+      array_i64_drop_h(primary_saved)
+      array_i64_set_h(g.alt_meta, 0, new_saved)
+    let new_cur_r = if g.cursor_row < new_rows then g.cursor_row else new_rows - 1
+    let new_cur_c = if g.cursor_col < new_cols then g.cursor_col else new_cols - 1
+    Grid { rows: new_rows, cols: new_cols,
+           cursor_row: new_cur_r, cursor_col: new_cur_c,
+           fg: g.fg, bg: g.bg, attrs: g.attrs,
+           cells: new_active, alt_meta: g.alt_meta,
+           scrollback: g.scrollback }
+
+// ── Scrollback view ────────────────────────────────────────────
+//
+// Renderer reads cells via grid_view_get instead of grid_get so
+// scroll-up shows historical content from the ring instead of
+// the live grid.  At view_offset K (0 ≤ K ≤ count):
+//   - visible row r where (count - K + r) < count → from
+//     scrollback at logical index (count - K + r)
+//   - else → from live grid at row (count - K + r) - count
+// At K = 0 the formula collapses to the live grid (no scrollback
+// touched).
+
+fn grid_view_get(g: Grid, row: Int, col: Int) -> Int [io]
+  // Alt-screen content isn't pushed to scrollback, so showing
+  // scrollback while in alt would commingle vim/less UI with
+  // pre-vim shell output.  Bypass the offset when in alt mode.
+  let using_alt = array_i64_get_h(g.alt_meta, 2)
+  if using_alt == 1
+    grid_get(g, row, col)
+  else
+    let k     = scrollback_view_offset(g.scrollback)
+    let count = scrollback_count(g.scrollback)
+    let virt  = count - k + row
+    if virt < 0
+      blank_word0()
+    elif virt < count
+      scrollback_get_cell(g.scrollback, virt, col)
+    else
+      grid_get(g, virt - count, col)
+
+// Slice 9 truecolor: word 1 (bg_rgb) of the view-aware cell read.
+fn grid_view_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
+  let using_alt = array_i64_get_h(g.alt_meta, 2)
+  if using_alt == 1
+    grid_get_w1(g, row, col)
+  else
+    let k     = scrollback_view_offset(g.scrollback)
+    let count = scrollback_count(g.scrollback)
+    let virt  = count - k + row
+    if virt < 0
+      blank_word1()
+    elif virt < count
+      scrollback_get_cell_w1(g.scrollback, virt, col)
+    else
+      grid_get_w1(g, virt - count, col)
+
+fn grid_view_offset(g: Grid) -> Int [io]
+  scrollback_view_offset(g.scrollback)
+
+// Adjust the scrollback view offset by `delta` lines (positive =
+// scroll up into history, negative = scroll back down toward
+// live).  Clamps to [0, scrollback_count].  No-op when in alt
+// screen (alt-buffer content isn't pushed to scrollback, so
+// scrolling there would jump to stale history).
+fn grid_scroll_view(g: Grid, delta: Int) -> Grid [io]
+  let using_alt = array_i64_get_h(g.alt_meta, 2)
+  if using_alt == 1
+    g
+  else
+    let current = scrollback_view_offset(g.scrollback)
+    let count = scrollback_count(g.scrollback)
+    let next = current + delta
+    let clamped = if next < 0
+      0
+    elif next > count
+      count
+    else
+      next
+    scrollback_set_view_offset(g.scrollback, clamped)
+    g
+
+// Reset view to live grid.  Called from input-driven mutators
+// (grid_put_char, grid_carriage_return, etc.) so any shell
+// output snaps the view back to the bottom — matches xterm /
+// gnome-terminal behavior.
+fn grid_reset_view(g: Grid) -> Grid [io]
+  scrollback_set_view_offset(g.scrollback, 0)
+  g
+
+// ── Rendering (debug / grid-trace) ─────────────────────────────
+
+// Render the grid to a single string with rows separated by \n,
+// using the cell glyphs only (no color escapes — this is the
+// debug path).  Cursor position is marked with a leading "@ R,C"
+// header so test harnesses can assert on it.
+fn grid_to_string(g: Grid) -> Str [io]
+  let mut out = "@ " + str.from_int(g.cursor_row) + "," + str.from_int(g.cursor_col) + "\n"
+  for r in 0..g.rows
+    for c in 0..g.cols
+      let cell = array_i64_get_h(g.cells, grid_idx(g, r, c))
+      out = out + str.from_char(cell_glyph(cell))
+    out = out + "\n"
+  out
