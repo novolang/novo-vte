@@ -1330,7 +1330,13 @@ fn grid_to_string(g: Grid) -> Str [io]
   let mut out = "@ " + str.from_int(g.cursor_row) + "," + str.from_int(g.cursor_col) + "\n"
   for r in 0..g.rows
     for c in 0..g.cols
-      let cell = array_i64_get_h(g.cells, grid_idx(g, r, c))
+      // Slice 9 widened cells to TWO i64 words (w0 = glyph/attrs/fg,
+      // w1 = bg); grid_idx is still the cell index, so the raw
+      // array offset needs the ×2 stride.  Reading it unscaled
+      // interleaved w0/w1, and cell_glyph of a bg word is 0 — a NUL
+      // that truncated every grid trace at the first cell.  Go
+      // through grid_get, which owns the stride and bounds-clamps.
+      let cell = grid_get(g, r, c)
       out = out + str.from_char(cell_glyph(cell))
     out = out + "\n"
   out
