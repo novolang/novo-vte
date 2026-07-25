@@ -785,6 +785,58 @@ fn grid_clear_cursor_shape_dirty(g: Grid) -> Grid [io]
 fn grid_mouse_mode(g: Grid) -> Int [io]
   array_i64_get_h(g.alt_meta, 14)
 
+// Pure mouse-tracking gate + SGR button-byte, split out of
+// render.forward_mouse_event so it is unit-testable without a PTY.
+// Given the active mouse-mode bitmask and a compact modifier+button
+// mask, return the SGR button byte to emit, or -1 when the event must
+// NOT be forwarded (so the terminal's local selection handles it).
+//
+//   mode bits: 1 = 1000 (report clicks), 2 = 1002 (report drag =
+//              motion while a button is held), 4 = 1003 (report ANY
+//              motion incl. idle hover), 8 = 1006 (SGR framing —
+//              affects only the ESC[< wrapper, not this byte).
+//   mods bits: 0 = Shift, 1 = Ctrl, 2 = Alt,
+//              3/4/5 = left/middle/right button currently HELD.
+//   motion:    true for a MotionNotify (drag / hover).
+//   button:    SGR button for a press/release (0=left,1=mid,2=right).
+//
+// The fix this encodes: a motion event's button is the *held* button
+// (or 3 = "no button" for idle hover), NOT a hardcoded left-button.
+// Previously every hover was forwarded as a left-button drag, so apps
+// with 1002/1003 tracking (zellij) kept extending their selection when
+// the mouse merely moved with no button down.
+fn grid_mouse_sgr_code(mode: Int, mods: Int, motion: Bool, button: Int) -> Int
+  let shift_held = mods % 2 == 1
+  if mode == 0 or shift_held
+    0 - 1
+  else
+    // Which button is physically held (bits 3/4/5): left→0, mid→1,
+    // right→2, none→3.
+    let held = if bits.band(mods, 8) != 0
+      0
+    elif bits.band(mods, 16) != 0
+      1
+    elif bits.band(mods, 32) != 0
+      2
+    else
+      3
+    let report_drag   = bits.band(mode, 2) != 0
+    let report_any    = bits.band(mode, 4) != 0
+    let report_clicks = bits.band(mode, 7) != 0
+    let eff_button = if motion then held else button
+    let want = if motion
+      if held != 3 then report_drag or report_any else report_any
+    else
+      report_clicks
+    if not want
+      0 - 1
+    else
+      // SGR modifier offsets: +8 meta, +16 ctrl, +32 motion.
+      let ctrl_bit = if bits.band(mods, 2) != 0 then 16 else 0
+      let alt_bit  = if bits.band(mods, 4) != 0 then 8  else 0
+      let mot_bit  = if motion then 32 else 0
+      eff_button + ctrl_bit + alt_bit + mot_bit
+
 fn grid_mouse_mode_bit_on(g: Grid, bit: Int) -> Grid [io]
   let cur = array_i64_get_h(g.alt_meta, 14)
   array_i64_set_h(g.alt_meta, 14, bits.bor(cur, bit))
@@ -1488,7 +1540,13 @@ fn grid_to_string(g: Grid) -> Str [io]
   let mut out = "@ " + str.from_int(g.cursor_row) + "," + str.from_int(g.cursor_col) + "\n"
   for r in 0..g.rows
     for c in 0..g.cols
-      let cell = array_i64_get_h(g.cells, grid_idx(g, r, c))
+      // Slice 9 widened cells to TWO i64 words (w0 = glyph/attrs/fg,
+      // w1 = bg); grid_idx is still the cell index, so the raw
+      // array offset needs the ×2 stride.  Reading it unscaled
+      // interleaved w0/w1, and cell_glyph of a bg word is 0 — a NUL
+      // that truncated every grid trace at the first cell.  Go
+      // through grid_get, which owns the stride and bounds-clamps.
+      let cell = grid_get(g, r, c)
       out = out + str.from_char(cell_glyph(cell))
     out = out + "\n"
   out
