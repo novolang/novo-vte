@@ -2,6 +2,14 @@
 
 _Structural / readability review (auto-generated). Each item cites `file:line`._
 
+## Status
+
+Legend: ✅ done · ⏸ deferred/blocked · ☐ open.
+
+- ✅ **`dispatch_csi` heavy arms** — lifted the four multi-line CSI arms (DA `c`, DSR `n`, DECSTBM `r`, DECSCUSR `q`) into named `csi_da` / `csi_dsr` / `csi_set_scroll_region` / `csi_set_cursor_style` handlers `(p, g) -> Grid`; `dispatch_csi` now reads as a table (148 → 104 lines). Behaviour-preserving: `vte_grid_tests` 2/0 (the zsh-line-edit test feeds real CSI through the parser) and the umbrella grid test pass.
+- ☐ parser-state Int fns (`st_ground()`…) → enum — deferred (noted below as low-priority/stylistic; the i64-slot storage makes it churn-heavy).
+- ☐ `feed_osc_string` / `feed_dcs_string` near-duplicate — open.
+
 The parser/grid split is generally well-factored (small, named helpers; the
 `slot_*()` / `attr_*()` accessor-fn "constants" are an intentional design to
 keep parser/grid state in an FFI-backed i64 array and avoid a struct clone per

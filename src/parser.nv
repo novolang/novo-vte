@@ -290,6 +290,61 @@ fn open_empty_param_slot(p: Parser) [io]
 
 // ── CSI handlers ───────────────────────────────────────────────
 
+// 'c' (0x63) = DA — Device Attributes query.  Reply on the response
+// queue; the main loop ships it to the PTY master.  nvim sends this at
+// startup and waits ~1 s for the reply before falling back to slow
+// timeouts.  Primary (`\e[c`) → VT220+colors; secondary (`\e[>c`,
+// intermediate '>') → version.
+fn csi_da(p: Parser, g: Grid) -> Grid [io]
+  let intm = array_i64_get_h(p.slots, slot_intermediate())
+  if intm == 62
+    // CSI > c — secondary DA.  Format: ESC [ > Pp ; Pv ; Pc c
+    // Pp = terminal type (0 = VT100), Pv = version, Pc = patch.
+    response_append_str(p, str.from_char(27) + "[>0;1;0c")
+  else
+    // CSI c — primary DA.  62 = VT220, 22 = ANSI colors; 62;22 tells
+    // nvim "modern terminal, use short timeouts".
+    response_append_str(p, str.from_char(27) + "[?62;22c")
+  g
+
+// 'n' (0x6E) = DSR — Device Status Report.
+//   `\e[5n` → reply `\e[0n` (terminal OK)
+//   `\e[6n` → reply `\e[<row>;<col>R` (1-indexed cursor pos)
+fn csi_dsr(p: Parser, g: Grid) -> Grid [io]
+  let mode = parser_param(p, 0, 0)
+  if mode == 5
+    response_append_str(p, str.from_char(27) + "[0n")
+  elif mode == 6
+    let row = grid.grid_cursor_row(g) + 1
+    let col = grid.grid_cursor_col(g) + 1
+    response_append_str(p,
+      str.from_char(27) + "[" + str.from_int(row) + ";"
+      + str.from_int(col) + "R")
+  g
+
+// 'r' (0x72) = DECSTBM — set top/bottom margins (scroll region).
+// Params are 1-indexed inclusive.  No params = full grid; first param
+// missing or 1 = top of grid; second omitted = bottom of grid.
+fn csi_set_scroll_region(p: Parser, g: Grid) -> Grid [io]
+  let top = parser_param(p, 0, 1) - 1
+  let bot = parser_param(p, 1, g.rows) - 1
+  grid.grid_set_scroll_region(g, top, bot)
+
+// 'q' (0x71) with SPACE intermediate = DECSCUSR (set cursor style).
+// vim / nvim send this on mode change so the cursor shape mirrors the
+// mode (block normal, bar insert, underline replace).  Without the SP
+// intermediate it's a different, less-used CSI we ignore.
+fn csi_set_cursor_style(p: Parser, g: Grid) -> Grid [io]
+  let intm = array_i64_get_h(p.slots, slot_intermediate())
+  if intm == 32
+    // Latch dirty so a re-emitting host (novomux) forwards the new
+    // shape this frame — even when the value matches the current one
+    // (vim re-asserts block 2 on every return to normal).
+    grid.grid_mark_cursor_shape_dirty(
+      grid.grid_set_cursor_shape(g, parser_param(p, 0, 0)))
+  else
+    g
+
 fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io]
   flush_current_param(p)
   // Slice 2b: DEC private-mode dispatch — `\e[?Nh` (DECSET) and
@@ -368,65 +423,21 @@ fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io]
   // 'T' (0x54) = SD — scroll down N (default 1)
   elif final_byte == 84
     grid.grid_scroll_region_down(g, parser_param(p, 0, 1))
-  // 'c' (0x63) = DA — Device Attributes query.  Reply on the
-  // response queue; main loop ships it to the PTY master.  nvim
-  // sends this at startup and waits ~1 s for the reply before
-  // falling back to slow timeouts for everything.  Two forms:
-  //   `\e[c`  (primary DA, no intermediate) — reply VT220+colors
-  //   `\e[>c` (secondary DA, intermediate '>') — reply version
+  // 'c' (0x63) = DA — Device Attributes query (see csi_da)
   elif final_byte == 99
-    let intm = array_i64_get_h(p.slots, slot_intermediate())
-    if intm == 62
-      // CSI > c — secondary DA.  Format: ESC [ > Pp ; Pv ; Pc c
-      // Pp = terminal type (0 = VT100), Pv = version, Pc = patch.
-      response_append_str(p, str.from_char(27) + "[>0;1;0c")
-    else
-      // CSI c — primary DA.  Format: ESC [ ? Pn ; Pn c
-      // 62 = VT220, 22 = ANSI colors.  xterm responds with a
-      // much longer list (1,2,6,9,15,etc.); 62;22 is enough to
-      // tell nvim "I'm a modern terminal, use short timeouts".
-      response_append_str(p, str.from_char(27) + "[?62;22c")
-    g
-  // 'n' (0x6E) = DSR — Device Status Report.
-  //   `\e[5n` → reply `\e[0n` (terminal OK)
-  //   `\e[6n` → reply `\e[<row>;<col>R` (1-indexed cursor pos)
+    csi_da(p, g)
+  // 'n' (0x6E) = DSR — Device Status Report (see csi_dsr)
   elif final_byte == 110
-    let mode = parser_param(p, 0, 0)
-    if mode == 5
-      response_append_str(p, str.from_char(27) + "[0n")
-    elif mode == 6
-      let row = grid.grid_cursor_row(g) + 1
-      let col = grid.grid_cursor_col(g) + 1
-      response_append_str(p,
-        str.from_char(27) + "[" + str.from_int(row) + ";"
-        + str.from_int(col) + "R")
-    g
-  // 'r' (0x72) = DECSTBM — set top/bottom margins (scroll region)
+    csi_dsr(p, g)
+  // 'r' (0x72) = DECSTBM — set scroll region (see csi_set_scroll_region)
   elif final_byte == 114
-    // Params are 1-indexed inclusive.  No params = full grid;
-    // first param missing or 1 = top of grid; second missing or
-    // omitted = bottom of grid.
-    let top = parser_param(p, 0, 1) - 1
-    let bot = parser_param(p, 1, g.rows) - 1
-    grid.grid_set_scroll_region(g, top, bot)
+    csi_set_scroll_region(p, g)
   // 'm' (0x6D) = SGR — set graphic rendition
   elif final_byte == 109
     dispatch_sgr(p, g)
-  // 'q' (0x71) with SPACE intermediate = DECSCUSR (set cursor
-  // style).  vim / nvim send this on mode change so the cursor
-  // shape mirrors the mode (block normal, bar insert, underline
-  // replace).  Without the SP intermediate it's a different,
-  // less-used CSI we ignore.
+  // 'q' (0x71) SP = DECSCUSR — set cursor style (see csi_set_cursor_style)
   elif final_byte == 113
-    let intm = array_i64_get_h(p.slots, slot_intermediate())
-    if intm == 32
-      // Latch dirty so a re-emitting host (novomux) forwards the new
-      // shape this frame — even when the value matches the current
-      // one (vim re-asserts block 2 on every return to normal).
-      grid.grid_mark_cursor_shape_dirty(
-        grid.grid_set_cursor_shape(g, parser_param(p, 0, 0)))
-    else
-      g
+    csi_set_cursor_style(p, g)
   else
     g
 
