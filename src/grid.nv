@@ -1,30 +1,31 @@
-// grid.nv — Cell + Grid model for novoterm.
+// grid.nv — Cell + Grid model for the novo-vte terminal emulator,
+// shared by novoterm and novomux.
 //
-// Slice 2 of features/orbits/novoterm/README.md.  Pure-Novo:
-// no FFI surface of its own.  Backed by a std.array i64 array
-// (unboxed scalar storage, O(1) get/set) so per-frame mutation
+// Pure-Novo: no FFI surface of its own.  Backed by a std.array i64
+// array (unboxed scalar storage, O(1) get/set) so per-frame mutation
 // doesn't allocate.
 //
-// Cell layout (packed Int, low bits → high bits):
-//   bits  0..7   : glyph (ASCII 0..127; high-bit codepoints
-//                          stored verbatim, Unicode lands later)
-//   bits  8..11  : foreground color index (0..15)
-//   bits 12..15  : background color index (0..15)
-//   bits 16..23  : attribute bitmask
-//                    bit 0 = bold      (SGR 1 / 22)
-//                    bit 1 = underline (SGR 4 / 24)
-//                    bit 2 = reverse   (SGR 7 / 27)
+// A cell is TWO consecutive i64 words; the exact bit assignment lives
+// beside the packing helpers in the "Cell packing helpers" section
+// below, which is the single normative statement of the layout.
 //
-// Grid is a flat (rows × cols) i64 array indexed by
-// `row * cols + col`.  Cursor + current SGR state ride along on
-// the Grid struct as plain Int fields; every mutator returns a
-// new Grid with the updated values so the caller's `let mut g =
-// grid.grid_new(...)` reassign carries them forward.
+// Grid is a flat (rows × cols) array of those word pairs, addressed by
+// the linear cell index `row * cols + col` (`grid_idx`) times the
+// 2-word stride.  Cursor and current SGR state ride along on the Grid
+// struct as `mut` fields; every mutator also RETURNS the Grid so a
+// caller written in the older threading style still reads correctly.
 //
-// Color indices follow the standard 16-color ANSI palette:
+// One cell is exactly one column.  East Asian Wide and Fullwidth
+// characters (UAX #11) are stored in a single cell and drawn one
+// column wide, and combining marks (UAX #29 grapheme clusters) each
+// occupy their own cell rather than joining the base character.
+//
+// Color arrives as the ECMA-48 SGR palette — 30..37 / 40..47 and the
+// aixterm bright forms 90..97 / 100..107:
 //   0=black 1=red 2=green 3=yellow 4=blue 5=magenta 6=cyan 7=white
-//   8..15 are the bright variants.  Default fg = 7 (white),
-//   default bg = 0 (black).
+//   8..15 are the bright variants.  Default fg = 7, default bg = 0.
+// The parser resolves an index to 24-bit RGB before it reaches a
+// cell, so stored cells hold RGB and never an index.
 //
 // Why these @ffi re-declarations live here: pkg-build loads
 // sibling modules with `prepend_stdlib:false`, so compiler/stdlib/
@@ -64,10 +65,11 @@ fn blank_glyph() -> Int
 
 // ── Cell packing helpers ───────────────────────────────────────
 //
-// Slice 9 (truecolor): cell widened from 1 i64 → 2 i64s so we can
-// store full 24-bit RGB per channel.  Previous 1-i64 layout had
-// fg / bg as 8-bit palette indices (256-color cube quantisation
-// at parse time), losing the original truecolor SGR values.
+// A cell is 2 i64s rather than 1 because a single word cannot hold
+// two 24-bit colors beside the glyph and attrs.  Packing fg and bg as
+// 8-bit palette indices would fit, but it quantises `CSI 38;2;R;G;Bm`
+// (ECMA-48 SGR direct-color) into the 256-color cube at parse time
+// and the original values are then unrecoverable.
 //
 // Cell layout (2 consecutive i64s in the cells array):
 //   word 0:  bits  0..15 — glyph codepoint (16 bits)
@@ -125,14 +127,15 @@ fn blank_word1() -> Int
 fn blank_cell() -> Int
   blank_word0()
 
-// Back-compat pack_cell shim: takes (glyph, fg_idx, bg_idx, attrs)
-// — the slice-2b 1-word layout — and returns the word-0 half of
-// the slice-9 2-word truecolor cell with fg resolved via the
-// session palette.  Used by the test harness + a few call sites
-// that still want the "blank cell with glyph X" pattern without
-// touching word 1 (word 1 should be written separately to set
-// background; the back-compat caller's blank bg behaviour is
-// preserved because grid_set leaves word 1 alone).
+// Index-taking shim: (glyph, fg_idx, bg_idx, attrs) in, word 0 of the
+// 2-word cell out, with fg_idx resolved to RGB through the session
+// palette.
+//
+// Two things a caller must know.  `bg_idx` is accepted and IGNORED —
+// background lives in word 1, which a word-0 packer cannot reach — so
+// a grid_set of this value leaves whatever background the cell
+// already had.  And nothing in this package or its consumers calls
+// it today; it is here as part of the exported surface.
 fn pack_cell(glyph: Int, fg_idx: Int, bg_idx: Int, attrs: Int) -> Int [io]
   let fg_rgb = novo_term_palette_lookup_h(fg_idx)
   pack_word0(glyph, attrs, fg_rgb)
@@ -148,8 +151,7 @@ fn novo_term_palette_lookup_h(idx: Int) -> Int [io]
 // struct: `parser_feed_byte` returns a Grid, so novoterm allocated one
 // per BYTE of pty output.  Measured at ~1.1 allocations/byte with 98%
 // never reclaimed (sibling-module structs get no drop_fn), which is how
-// a terminal reached 42 GB in a day.  See
-// bugs/novoterm-gui-loop-leaks-about-48mb-per-minute.md.
+// a terminal reaches tens of gigabytes in a day of ordinary use.
 //
 // The handles (alt_meta, scrollback, wrap_flags) and the dimensions stay
 // immutable: nothing mutates them in place, and grid_resize builds a
@@ -165,7 +167,7 @@ struct Grid
   mut cells: Int    // handle from array_i64_alloc_h — ACTIVE buffer
   alt_meta: Int     // 8-slot i64 array (alt-screen + saved state)
   scrollback: Int   // i64 array — scrollback ring + view state
-  // Slice 52 — wrapped-line reflow.  Per-row i64 array sized
+  // Wrapped-line reflow state.  Per-row i64 array sized
   // `rows`; entry N = 1 if row N's last cell continues onto
   // row N+1 via auto-wrap (xterm's "soft wrap"), 0 if row N
   // ended with a hard line break (CR/LF) or a short content row.
@@ -175,12 +177,12 @@ struct Grid
   // the user attaches from a 120-col terminal.
   wrap_flags: Int
 
-// Slice 2b/alt-screen: alt_meta side-array holds the state that
-// only applies when DEC ?1049/?1047/?47 toggling is in play.
-// Slice 6+/DECSTBM extended slots 8-9 for the scroll region
-// (top, bottom — inclusive row indices; default 0..rows-1 =
-// "no region, scroll the whole grid").  Re-using the same side-
-// array avoids adding a third handle field to the Grid struct.
+// The alt_meta side-array holds terminal mode state that has no home
+// in a cell: the DEC private modes (`ctlseqs`' ?1049 / ?1047 / ?47
+// alt-screen family, ?7 DECAWM, ?25 DECTCEM, ?1000-?1006 mouse,
+// ?2004 bracketed paste), the DECSTBM scroll region, and the DECSC
+// save slots.  One i64 side-array rather than a field per mode keeps
+// the Grid struct — which is rebuilt on resize — small.
 //
 // Slot layout:
 //   0  primary cells handle  (saved when alt is active, 0 otherwise)
@@ -259,10 +261,11 @@ struct Grid
 fn alt_meta_slots() -> Int
   17
 
-// Slice 2b/scrollback: side-array layout for the scrollback ring
-// buffer + view state.  Hard-coded capacity for v1 (1000 lines —
-// covers a normal shell session's history; config knob can come
-// later).  Slot layout:
+// Side-array layout for the scrollback ring buffer + view state.
+// Capacity is a fixed 1000 lines: the ring is allocated once at
+// grid_new and never grown, so the cost is bounded at
+// `capacity × cols × 2` i64s regardless of session length.  Slot
+// layout:
 //
 //   0  capacity (rows)
 //   1  head (physical index of OLDEST row in the ring)
@@ -312,9 +315,9 @@ fn scrollback_clear(sb: Int) [io]
 // `src_handle` is an i64-array handle; cells [src_offset ..
 // src_offset+cols) are copied.  Advances head when count was
 // already at capacity (overwriting the oldest row).
-// Slice 9 truecolor: scrollback stores 2 i64s per cell (same as
-// the live grid).  src_offset is a cell-index (not a slot offset);
-// copies 2 i64s per cell.
+// Scrollback stores 2 i64s per cell, same as the live grid.
+// `src_offset` is a CELL index, not a slot offset; both words are
+// copied per cell so colors travel with their glyphs.
 fn scrollback_push_row(sb: Int, src_handle: Int, src_offset: Int) [io]
   let cap   = scrollback_cap(sb)
   let cols  = scrollback_cols(sb)
@@ -366,8 +369,7 @@ fn scrollback_get_cell_w1(sb: Int, l: Int, c: Int) -> Int [io]
 
 // Allocate a scrollback array sized for cap rows × cols cells.
 fn scrollback_new(cap: Int, cols: Int) -> Int [io]
-  // Slice 9 truecolor: scrollback now stores 2 i64s per cell, so
-  // ring storage is cap × cols × 2 (was cap × cols).
+  // 2 i64s per cell, so ring storage is cap × cols × 2.
   let n_slots = sb_meta_slots() + cap * cols * 2
   let h = array_i64_alloc_h(n_slots)
   array_i64_set_h(h, 0, cap)
@@ -381,7 +383,7 @@ fn scrollback_new(cap: Int, cols: Int) -> Int [io]
 // starts at (0, 0).  SGR state at defaults.  Caller must
 // eventually `grid.grid_drop(g)` to release the backing arrays.
 fn grid_new(rows: Int, cols: Int) -> Grid [io]
-  // Slice 9 truecolor: 2 i64s per cell.
+  // 2 i64s per cell.
   let n_cells = rows * cols
   let n = n_cells * 2
   let h = array_i64_alloc_h(n)
@@ -404,7 +406,6 @@ fn grid_new(rows: Int, cols: Int) -> Grid [io]
   // alt buffer.  The primary's content and cursor were both lost, and it
   // looked non-deterministic because it depended on allocation order.
   // -1 is the absent sentinel; a handle is never negative.
-  // bugs/novoterm-alt-screen-exit-loses-cursor-column.md
   array_i64_set_h(meta, 0, 0 - 1)
   array_i64_set_h(meta, 1, 0 - 1)
   // DECSTBM defaults: scroll region = whole grid (0..rows-1).
@@ -426,15 +427,14 @@ fn grid_new(rows: Int, cols: Int) -> Grid [io]
   // cursor_shape_dirty default = 0 (no pending DECSCUSR to forward).
   array_i64_set_h(meta, 16, 0)
   let sb = scrollback_new(scrollback_capacity(), cols)
-  // Slice 52 — per-row wrap flags, all zero (no wraps yet).
+  // Per-row wrap flags, all zero: a fresh grid has no soft wraps.
   let wf = array_i64_alloc_h(rows)
   for i in 0..rows
     array_i64_set_h(wf, i, 0)
   Grid {
     rows: rows, cols: cols,
     cursor_row: 0, cursor_col: 0,
-    // Slice 9 truecolor: Grid.fg/.bg now hold 24-bit RGB
-    // (previously 8-bit palette indices).
+    // Grid.fg/.bg hold 24-bit RGB, not palette indices.
     fg: default_fg_rgb(), bg: default_bg_rgb(), attrs: 0,
     cells: h, alt_meta: meta, scrollback: sb,
     wrap_flags: wf,
@@ -465,9 +465,9 @@ fn grid_cursor_row(g: Grid) -> Int
 fn grid_cursor_col(g: Grid) -> Int
   g.cursor_col
 
-// Slice 9 truecolor: cells are now 2 i64s each.  `grid_idx`
-// returns the linear cell index (row * cols + col); the storage
-// offsets for word 0 / word 1 are 2*idx and 2*idx+1.
+// `grid_idx` returns the LINEAR CELL index (row * cols + col), not a
+// storage offset: cells are 2 i64s each, so the words live at 2*idx
+// and 2*idx+1.  Every raw-array access below must apply that stride.
 fn grid_idx(g: Grid, row: Int, col: Int) -> Int
   row * g.cols + col
 
@@ -510,11 +510,10 @@ fn grid_set_pair(g: Grid, row: Int, col: Int, w0: Int, w1: Int) -> Grid [io]
     array_i64_set_h(g.cells, idx + 1, w1)
   g
 
-// Slice 9 truecolor helpers — operate on the raw cells array
-// (handle + linear cell index) instead of going through Grid.
-// Used by the scroll / erase / line-shift loops below that copy
-// or blank cells in tight inner loops.  Both words moved per
-// cell so colors don't desync from glyphs.
+// Raw-array cell helpers — take a handle + linear cell index instead
+// of going through Grid, for the scroll / erase / line-shift loops
+// below.  Both words move per cell; moving only word 0 would leave
+// each cell's background behind and desync colors from glyphs.
 fn cells_copy(dst: Int, dst_cell_idx: Int, src: Int, src_cell_idx: Int) [io]
   let s = 2 * src_cell_idx
   let d = 2 * dst_cell_idx
@@ -539,8 +538,8 @@ fn clamp(v: Int, lo: Int, hi: Int) -> Int
     v
 
 fn grid_cursor_set(g: Grid, row: Int, col: Int) -> Grid [io]
-  // Slice 9 (deferred wrap): any explicit cursor positioning
-  // clears the right-margin pending-wrap flag.  Otherwise the
+  // Deferred wrap: any explicit cursor positioning clears the
+  // right-margin pending-wrap flag.  Otherwise the
   // saved wrap state would fire on the next print after a CUP
   // that landed at col cols-1, causing a spurious row advance.
   array_i64_set_h(g.alt_meta, 11, 0)
@@ -551,9 +550,9 @@ fn grid_cursor_set(g: Grid, row: Int, col: Int) -> Grid [io]
 fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io]
   grid_cursor_set(g, g.cursor_row + dr, g.cursor_col + dc)
 
-// Slice 9 truecolor: fg/bg now take 24-bit RGB (was 8-bit
-// palette index).  Parser resolves indexed colors to RGB via
-// novo_term_palette_lookup before calling these.
+// fg/bg take 24-bit RGB, never a palette index: the parser resolves
+// SGR 30..37 / 90..97 through novo_term_palette_lookup before calling
+// these, so a live palette change affects only cells written after it.
 fn grid_set_fg(g: Grid, fg_rgb: Int) -> Grid
   g.fg = bits.band(fg_rgb, 16777215)
   g
@@ -566,9 +565,10 @@ fn grid_set_attrs(g: Grid, attrs: Int) -> Grid
   g.attrs = bits.band(attrs, 255)
   g
 
-// Slice 9: SGR 0 (reset) reads runtime defaults so OSC 10/11
-// changes take effect on the very next attribute reset (apps
-// follow OSC 10/11 with a screen clear + reset typically).
+// SGR 0 (reset) reads the RUNTIME defaults rather than the
+// compile-time constants, so an OSC 10 / OSC 11 default-color change
+// takes effect on the very next attribute reset — which is what apps
+// emit right after changing them (OSC, then clear, then SGR 0).
 @ffi("novo_term_default_fg_get")
 fn _td_fg_get_h() -> Int [io]
 
@@ -625,8 +625,8 @@ fn grid_scroll_up(g: Grid) -> Grid [io]
     for c in 0..g.cols
       cells_copy(g.cells, grid_idx(g, r, c),
                   g.cells, grid_idx(g, r + 1, c))
-  // Slice 52 — shift the per-row wrap_flags alongside the cells
-  // so the row→wrap-flag correspondence stays intact across
+  // Shift the per-row wrap_flags alongside the cells so the
+  // row→wrap-flag correspondence stays intact across
   // scroll-up.  Without this, marked-soft-wrap rows keep their
   // mark on the row index they USED to occupy, mis-identifying
   // logical lines on the next reflow.
@@ -643,35 +643,33 @@ fn grid_scroll_up(g: Grid) -> Grid [io]
 
 // ── Character writes ───────────────────────────────────────────
 
-// Put a printable glyph at the cursor, advance the cursor one
-// column.  Wraps to the next row at the right margin; scrolls
-// when the cursor crosses the bottom edge.  Non-printable
-// (glyph < 32) is dropped — control bytes route through the
-// dedicated handlers below.
+// Put a glyph at the cursor, advance the cursor one column.  Wraps to
+// the next row at the right margin; scrolls when the cursor crosses
+// the bottom edge.
 fn grid_put_char(g: Grid, glyph: Int) -> Grid [io]
-  // Slice 2b: accept any positive codepoint; the renderer's
-  // atlas-mapping decides which slot to draw (printable ASCII,
-  // mapped Powerline range, or fallback to space).  Negative /
-  // zero / DEL is still rejected here so the cursor doesn't
-  // advance for stray control values.
+  // Any POSITIVE codepoint is accepted, including C0 controls: the
+  // parser routes real control bytes to the dedicated handlers before
+  // reaching here, and the renderer's atlas mapping decides which slot
+  // an unmapped codepoint falls back to.  Only 0, negatives and DEL
+  // are rejected, so the cursor never advances on a stray value.
   if glyph <= 0 or glyph == 127
     g
   else
-    // Slice 2b/scrollback: any shell-driven output snaps the
-    // view back to the live grid (xterm convention) — otherwise
+    // Any shell-driven output snaps the view back to the live
+    // grid (xterm convention) — otherwise
     // the user would scroll up, ls would run, and they'd still
     // be looking at the old content with no idea ls fired.
     scrollback_set_view_offset(g.scrollback, 0)
-    // Slice 9 (deferred wrap): xterm's "right-margin pending
-    // wrap" semantics.  If the previous put_char filled the last
-    // column, the cursor stayed pegged at cols-1 with wrap_pending
-    // set.  Trigger the wrap NOW, before printing the new char.
-    // Without this, fully-filled rows + LF advance the cursor
-    // by 2 rows total (eager-wrap + LF), shifting every row below
-    // by 1 — caught reproducing nvim's redraw-after-telescope
-    // path where each line filled to the right margin.
+    // xterm's "right-margin pending wrap" (see `ctlseqs`, DECAWM):
+    // if the previous put_char filled the last column, the cursor
+    // stayed pegged at cols-1 with wrap_pending set.  Trigger the
+    // wrap NOW, before printing the new char.  Wrapping eagerly
+    // instead makes a fully-filled row followed by LF advance the
+    // cursor by 2 rows (the eager wrap plus the LF), shifting every
+    // row below it by one — visible as doubled blank lines in any
+    // full-screen app that fills rows to the right margin.
     let g0 = if grid_wrap_pending(g) == 1 and grid_autowrap(g) == 1
-      // Slice 52 — mark the row we're about to wrap OUT of as a
+      // Mark the row we're about to wrap OUT of as a
       // soft-wrap continuation so grid_resize can rejoin the
       // logical line later.  Set BEFORE the scroll-up so the
       // mark lands on the actual row of the wrapping cell;
@@ -686,9 +684,9 @@ fn grid_put_char(g: Grid, glyph: Int) -> Grid [io]
       grid_clear_wrap_pending(g_wrap)
     else
       grid_clear_wrap_pending(g)
-    // Slice 9 truecolor: write both words.  W0 carries glyph +
-    // attrs + fg_rgb; W1 carries bg_rgb.  g0.fg / g0.bg are
-    // already 24-bit RGB after the parser-side palette lookup.
+    // Write BOTH words.  W0 carries glyph + attrs + fg_rgb; W1
+    // carries bg_rgb.  g0.fg / g0.bg are already 24-bit RGB after
+    // the parser-side palette lookup.
     let w0 = pack_word0(glyph, g0.attrs, g0.fg)
     let w1 = pack_word1(g0.bg)
     let g2 = grid_set_pair(g0, g0.cursor_row, g0.cursor_col, w0, w1)
@@ -709,9 +707,9 @@ fn grid_put_char(g: Grid, glyph: Int) -> Grid [io]
     else
       grid_cursor_set(g2, g2.cursor_row, next_col)
 
-// Slice 52 — per-row wrap-flag accessors.  Bounds-checked: a
-// stale row index (after scroll-up shifts) is treated as 0 so
-// resize-time reflow doesn't double-count.
+// Per-row wrap-flag accessors.  Bounds-checked: a stale row index
+// (after scroll-up shifts) reads as 0 so resize-time reflow doesn't
+// double-count a logical line.
 fn grid_row_wrapped(g: Grid, row: Int) -> Int [io]
   if row < 0 or row >= g.rows
     0
@@ -937,11 +935,11 @@ fn grid_erase_display(g: Grid, mode: Int) -> Grid [io]
 
 // ── Insert / Delete (line + char) ──────────────────────────────
 //
-// Slice 6+: CSI L/M/@/P (IL / DL / ICH / DCH) + S/T (SU / SD).
-// Critical for Neovim's split-window rendering — without them
-// nvim's regional updates either fall through to full redraws
-// (slow) or land in the wrong rows + cause the "doubled content"
-// rendering bug.  All operate within the active scroll region.
+// The ECMA-48 editing functions: CSI L / M / @ / P (IL / DL / ICH /
+// DCH) and CSI S / T (SU / SD).  Full-screen apps use these for
+// regional updates instead of repainting; a terminal that ignores
+// them forces a full redraw at best and paints updates into the wrong
+// rows at worst.  All operate within the active DECSTBM region.
 
 // IL — insert n blank lines at cursor row, push existing rows
 // down within region.  Cursor stays put (column unchanged).
@@ -1112,7 +1110,7 @@ fn grid_scroll_region_down(g: Grid, n: Int) -> Grid [io]
 
 // ── Alt-screen + DECSC/DECRC ───────────────────────────────────
 //
-// Slice 2b/alt-screen: vim / less / man / htop expect an
+// Full-screen apps (vim, less, man, htop) expect an
 // "alternate screen buffer" they can use without commingling
 // with the user's prior scrollback.  Triggered by DEC private
 // modes `\e[?1049h` (enter, save cursor first) and
@@ -1153,7 +1151,7 @@ fn grid_decrc(g: Grid) -> Grid [io]
 
 // Allocate the alt buffer lazily (first time we enter alt).
 fn alloc_alt_buf(g: Grid) -> Int [io]
-  // Slice 9 truecolor: 2 i64s per cell.
+  // 2 i64s per cell.
   let n_cells = g.rows * g.cols
   let h = array_i64_alloc_h(n_cells * 2)
   let bw0 = blank_word0()
@@ -1265,7 +1263,7 @@ fn grid_exit_alt_screen(g: Grid) -> Grid [io]
 
 // ── Resize ─────────────────────────────────────────────────────
 //
-// Slice 6+ window resize.  Allocate a fresh cells array sized
+// Window resize.  Allocate a fresh cells array sized
 // for the new (rows, cols), copy as much of the old content as
 // fits (top-left aligned), drop the old array.  Also resizes the
 // alt buffer if it was lazily allocated.  Cursor clamped into
@@ -1287,7 +1285,7 @@ fn alloc_blank_cells(rows: Int, cols: Int) -> Int [io]
     i = i + 1
   h
 
-// Slice 52 — find row's content length (highest non-blank column
+// Find a row's content length (highest non-blank column
 // + 1; 0 for entirely-blank row).  Used by reflow_cells to know
 // how many cells to copy from each old row.
 fn row_content_len(cells: Int, cols: Int, row: Int) -> Int [io]
@@ -1305,7 +1303,7 @@ fn row_content_len(cells: Int, cols: Int, row: Int) -> Int [io]
       c = c - 1
   last
 
-// Slice 52 — wrap-aware reflow.  Walks old grid top→bottom in
+// Wrap-aware reflow.  Walks the old grid top→bottom in
 // "logical lines" defined by old_wrap (consecutive wrapped rows
 // form one logical line), and emits each line into the new
 // grid at new_cols, re-wrapping where necessary.  Writes
@@ -1357,7 +1355,7 @@ fn reflow_cells(old_cells: Int, old_cols: Int, old_rows: Int,
 
 // Copy `old_cells` into `new_cells` cell-by-cell, top-left
 // aligned, clipping at the smaller of (old_rows/cols,
-// new_rows/cols).  Slice 9 truecolor: 2 i64s per cell.
+// new_rows/cols).  2 i64s per cell.
 fn copy_cells(old_cells: Int, old_cols: Int,
                new_cells: Int, new_cols: Int,
                copy_rows: Int, copy_cols: Int) [io]
@@ -1378,9 +1376,9 @@ fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io]
   else
     // DECSTBM scroll-region resets to the full new grid on
     // resize.  Apps re-issue their region after SIGWINCH; until
-    // they do, partial-region behavior post-resize is the wrong
-    // default.  User reported scroll glitches after resize+open
-    // file+scroll in nvim — the stale region was the culprit.
+    // they do, a region carried over from the old geometry names
+    // rows that may no longer exist, and scrolling inside it
+    // corrupts the rows outside.
     array_i64_set_h(g.alt_meta, 8, 0)
     array_i64_set_h(g.alt_meta, 9, new_rows - 1)
     let copy_r = if new_rows < g.rows then new_rows else g.rows
@@ -1400,7 +1398,7 @@ fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io]
     // Replace the active buffer.  Old cells handle gets freed;
     // alt_meta + scrollback handles outlive resize.
     let new_active = alloc_blank_cells(new_rows, new_cols)
-    // Slice 52 — wrap-aware reflow for the PRIMARY buffer when
+    // Wrap-aware reflow for the PRIMARY buffer when
     // cols change.  Alt-screen apps (vim / htop / less) redraw
     // on SIGWINCH so their cell-aligned copy is fine; primary
     // shells need the soft-wrap rejoin or long prompts /
@@ -1495,7 +1493,7 @@ fn grid_view_get(g: Grid, row: Int, col: Int) -> Int [io]
     else
       grid_get(g, virt - count, col)
 
-// Slice 9 truecolor: word 1 (bg_rgb) of the view-aware cell read.
+// Word 1 (bg_rgb) of the view-aware cell read.
 fn grid_view_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
   let using_alt = array_i64_get_h(g.alt_meta, 2)
   if using_alt == 1
@@ -1514,8 +1512,8 @@ fn grid_view_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
 fn grid_view_offset(g: Grid) -> Int [io]
   scrollback_view_offset(g.scrollback)
 
-// novomux slice 33 — public query for the alt-screen flag.
-// Returns 1 when the pane is currently in alt-screen mode (vim,
+// Public query for the alt-screen flag, for consumers outside this
+// module.  Returns 1 when the pane is in alt-screen mode (vim,
 // less, htop with mouse mode), 0 otherwise.  Lets consumers
 // decide whether to handle a mouse event themselves or let the
 // app inside handle it.  Internal helpers already check the
@@ -1564,12 +1562,12 @@ fn grid_to_string(g: Grid) -> Str [io]
   let mut out = "@ " + str.from_int(g.cursor_row) + "," + str.from_int(g.cursor_col) + "\n"
   for r in 0..g.rows
     for c in 0..g.cols
-      // Slice 9 widened cells to TWO i64 words (w0 = glyph/attrs/fg,
-      // w1 = bg); grid_idx is still the cell index, so the raw
-      // array offset needs the ×2 stride.  Reading it unscaled
-      // interleaved w0/w1, and cell_glyph of a bg word is 0 — a NUL
-      // that truncated every grid trace at the first cell.  Go
-      // through grid_get, which owns the stride and bounds-clamps.
+      // Go through grid_get rather than the raw array: a cell is TWO
+      // i64 words and grid_idx is a cell index, so a raw read needs
+      // the ×2 stride.  An unscaled read interleaves w0 and w1, and
+      // cell_glyph of a bg word is 0 — a NUL that truncates the whole
+      // trace at the first cell.  grid_get owns the stride and the
+      // bounds clamp.
       let cell = grid_get(g, r, c)
       out = out + str.from_char(cell_glyph(cell))
     out = out + "\n"

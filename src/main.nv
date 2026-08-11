@@ -3,9 +3,9 @@
 // orbit/novomux and orbit/novoterm both depend on this package
 // via `[dependencies] novo-vte = { path = "../novo-vte" }`.
 // The cross-package module loader pulls in src/parser.nv +
-// src/grid.nv as siblings; this main.nv stays a no-op stub
-// (cmd_pkg_build skips the dep's pkg_main per the slice-1
-// cross-package-modules contract).
+// src/grid.nv as siblings; this main.nv stays a no-op stub because
+// cmd_pkg_build never builds a dependency's pkg_main — only the
+// root package's `main` becomes an entry point.
 
 fn main() [io]
     println("novo-vte: library package — depend on it via [dependencies] novo-vte = { path = \"../novo-vte\" } from another Orbit package")

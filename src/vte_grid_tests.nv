@@ -22,12 +22,12 @@ fn rowstr(g: grid.Grid, r: Int, cols: Int) -> Str [io]
         s = s + str.from_int(grid.cell_glyph(grid.grid_get(g, r, i))) + " "
     s
 
-// Slice 9 widened cells to TWO i64 words (w0 = glyph/attrs/fg,
-// w1 = bg).  grid_to_string was never migrated: it indexed g.cells
-// with the unscaled cell index, so it read w0, w1, w0… interleaved.
-// cell_glyph of a bg word is 0 — a NUL, which truncated every dump
-// at the first cell.  That silently blinded NOVO_TERM_GRID_TRACE,
-// the only diagnostic for what novoterm actually rendered.
+// A cell is TWO i64 words (w0 = glyph/attrs/fg, w1 = bg), so any raw
+// read of g.cells must scale the cell index by 2.  An unscaled read
+// yields w0, w1, w0… interleaved, and cell_glyph of a bg word is 0 —
+// a NUL that truncates the dump at the first cell and silently blinds
+// NOVO_TERM_GRID_TRACE, the only diagnostic for what was rendered.
+// This test pins the stride at the one function that dumps the grid.
 @test
 fn test_grid_to_string_uses_two_word_stride() [io]
     let g0 = grid.grid_new(2, 3)
@@ -49,10 +49,9 @@ fn test_grid_to_string_uses_two_word_stride() [io]
 // stream to xterm (via pyte); this test asserts novo-vte agrees
 // with a reference emulator character for character.
 //
-// Provenance: bugs/closed/novoterm-input-duplication-and-backspace-
-// garbage.md.  The user-visible garbage there turned out NOT to be
-// a parser bug — xterm rendered the same stream identically — but
-// the differential is exactly what proved that, so it stays.
+// The differential against a reference emulator is the point: it is
+// what distinguishes "novo-vte mis-parsed the stream" from "the
+// stream really does say that", and only the former is our bug.
 @test
 fn test_real_zsh_line_edit_matches_xterm() [io]
     let p = parser.parser_new()

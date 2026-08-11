@@ -1,20 +1,43 @@
-// parser.nv — ANSI / xterm escape-sequence parser for novoterm.
+// parser.nv — ANSI / xterm escape-sequence parser, shared by novoterm
+// and novomux.
 //
-// Slice 2 of features/orbits/novoterm/README.md.  State machine
-// loosely tracking the DEC parser (Williams, "A parser for DEC's
-// ANSI-compatible video terminals") — minimum subset that lets a
-// real shell (bash, zsh) drive a grid correctly: printable ASCII,
-// BS/HT/LF/CR controls, ESC [ ... <CUP/CUU/CUD/CUF/CUB/EL/ED/SGR>,
-// ESC ] ... <BEL or ST> (consumed but not interpreted), ESC ( ...
-// (charset; consumed).
+// State machine loosely tracking the DEC parser (Williams, "A parser
+// for DEC's ANSI-compatible video terminals").  Sequence semantics
+// follow ECMA-48 / ISO 6429 for the standard functions and xterm's
+// `ctlseqs` for the DEC private modes.
 //
-// Out-of-scope for slice 2 (lands when novoterm needs it):
-//   - DCS (Device Control Strings — sixel, ReGIS etc.)
-//   - Designate-character-set tables (we consume the byte after
-//     ESC ( but don't actually switch charsets — ASCII only)
-//   - Alt-screen toggling (ESC [ ? 1049 h/l)
-//   - Cursor save/restore (ESC 7 / ESC 8)
-//   - Mouse reporting (ESC [ ? 1000 .. 1015 h/l)
+// WHAT IS INTERPRETED — this list is the parser's contract; each entry
+// has a `dispatch_*` / `feed_*` arm below.
+//
+//   text     printable ASCII and 2/3/4-byte UTF-8 (see the lead-byte
+//            table further down).  One codepoint = one cell.
+//   C0       BS, HT, LF, CR act; BEL and every other C0 byte are
+//            dropped.
+//   ESC      7 / 8 (DECSC / DECRC), D / E / M (IND / NEL / RI),
+//            ( <byte> (charset designate — the byte is consumed).
+//   CSI      A B C D (CUU CUD CUF CUB), H f (CUP HVP), E F (CNL CPL),
+//            G ` (CHA HPA), d (VPA), a e (HPR VPR), J K (ED EL),
+//            L M (IL DL), @ P (ICH DCH), X (ECH), S T (SU SD),
+//            r (DECSTBM), m (SGR), c (DA), n (DSR), q (DECSCUSR).
+//   CSI ? h/l   7 (DECAWM), 25 (DECTCEM), 47 / 1047 / 1049
+//            (alt screen), 1000 / 1002 / 1003 / 1006 (mouse
+//            tracking), 2004 (bracketed paste).
+//   OSC      accumulated into the `osc` side-array and handed to the
+//            caller to dispatch; this module does not act on it.
+//
+// WHAT IS CONSUMED BUT NOT ACTED ON — deliberately, so the payload
+// cannot leak into ground state and be re-parsed as text:
+//   - DCS, SOS, PM and APC strings (so no sixel, no ReGIS, no
+//     DECRQSS / XTGETTCAP replies).
+//   - The charset byte after ESC ( — output is always treated as
+//     ASCII/UTF-8, never as a DEC line-drawing set.
+//   - Every CSI final and private mode not listed above, plus
+//     ESC = / ESC > (DECPAM / DECPNM) and ESC c (RIS).
+//
+// The three alt-screen modes are collapsed onto one path: `?47` never
+// saved the cursor and `?1047` did not either before xterm 251, while
+// `?1049` is defined as save + switch + clear.  All three take the
+// save+switch+clear path here.
 //
 // State storage: Parser is a struct wrapping a single
 // std.array i64 handle.  Slot layout:
@@ -26,9 +49,12 @@
 //   slot 4   : intermediate byte (e.g. '?' for DEC private)
 //   slot 5   : OSC-string saw-ESC flag
 //   slot 6..5+MAX_PARAMS : param values
+//   slot 22  : UTF-8 partial codepoint accumulator
+//   slot 23  : UTF-8 continuation bytes still owed
 //
-// MAX_PARAMS = 16, total slots = 22.  Per-byte cost is O(1)
-// array reads/writes — no struct cloning on the hot path.
+// MAX_PARAMS = 16, so slots 6..21 are params and slots_total() is 24.
+// Per-byte cost is O(1) array reads/writes — no struct cloning on the
+// hot path, which is what makes a byte-at-a-time feed viable.
 
 // Re-declare the std.array @ffi externs locally — sibling modules
 // in pkg builds don't see the auto-prepended stdlib decls (same
@@ -58,23 +84,23 @@ fn st_csi_param() -> Int
   2
 fn st_osc_string() -> Int
   3
-// Slice 2b (UTF-8): a state for "in the middle of a multi-byte
-// codepoint, waiting for continuation bytes".
+// "In the middle of a multi-byte UTF-8 codepoint, waiting for
+// continuation bytes."
 fn st_utf8_cont() -> Int
   4
-// Slice 9 (DCS): consuming a Device Control String payload until
-// ST (ESC \) or BEL.  nvim uses DCS for terminfo capability
-// queries (\eP+q...\e\) — dropping them silently like we do for
-// OSC keeps the bytes from leaking through as printable text.
+// Consuming a Device Control String payload until ST (ESC \) or BEL.
+// Apps use DCS for terminfo capability queries (`\eP+q…\e\`, xterm's
+// XTGETTCAP); dropping the payload here keeps its bytes from leaking
+// into ground state and being re-parsed as text and stray CSIs.
 fn st_dcs_string() -> Int
   5
 
 fn max_params() -> Int
   16
 
-// Slice 2b: extra slots for UTF-8 partial-codepoint state (lead
-// byte payload, how many continuation bytes remain).  Bumps total
-// slots from 22 to 24.
+// 22 slots for the CSI machine (see the slot map in the header) plus
+// two for UTF-8 partial-codepoint state: the accumulated lead-byte
+// payload and how many continuation bytes are still owed.
 fn slots_total() -> Int
   24
 
@@ -101,14 +127,14 @@ fn slot_params_base() -> Int
 
 struct Parser
   slots: Int
-  // Slice 6+/terminal-queries: side-array for response bytes
-  // queued in answer to nvim/zsh probes (DA, CPR, DSR).  Slot 0
+  // Side-array for response bytes queued in answer to host
+  // probes (DA, CPR, DSR).  Slot 0
   // holds the count; slots 1..64 hold up to 64 reply bytes.  A
   // CPR/DA response is <16 bytes; 64 covers a burst of queries.
   // Main loop drains via parser_response_count + _byte_at + _clear
   // after each pump tick, writes the bytes to the PTY master.
   response: Int
-  // Slice 9: side-array for OSC dispatch (window title etc.).
+  // Side-array for OSC dispatch (window title etc.).
   //   slot 0: pending flag (0 = no, 1 = ready for caller dispatch)
   //   slot 1: parsed OSC code (the N in `OSC N ; <payload> ST`)
   //   slot 2: payload byte count
@@ -233,7 +259,7 @@ fn response_append_str(p: Parser, s: Str) [io]
     response_append_byte(p, str.byte_at(s, i) ?? 0)
     i = i + 1
 
-// Convenience getters used by tests + the slice-3 grid renderer.
+// Convenience getters used by tests + the grid renderer.
 
 fn parser_state(p: Parser) -> Int [io]
   array_i64_get_h(p.slots, slot_state())
@@ -347,11 +373,10 @@ fn csi_set_cursor_style(p: Parser, g: Grid) -> Grid [io]
 
 fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io]
   flush_current_param(p)
-  // Slice 2b: DEC private-mode dispatch — `\e[?Nh` (DECSET) and
-  // `\e[?Nl` (DECRST).  Intermediate '?' (63) recorded by
-  // feed_csi_param.  Today we only act on the alt-screen set
-  // (47 / 1047 / 1049); other private modes are consumed
-  // silently (the existing else g fallthrough).
+  // DEC private-mode dispatch — `\e[?Nh` (DECSET) and `\e[?Nl`
+  // (DECRST).  The '?' intermediate (63) was recorded by
+  // feed_csi_param; dispatch_private_mode decides which modes are
+  // acted on and drops the rest.
   let intermediate = array_i64_get_h(p.slots, slot_intermediate())
   if intermediate == 63 and (final_byte == 104 or final_byte == 108)
     dispatch_private_mode(p, g, final_byte == 104)
@@ -443,12 +468,17 @@ fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io]
 
 // DEC private mode set/reset.  `set` is true for DECSET (`h`),
 // false for DECRST (`l`).  Param 0 carries the mode number.
-// For v1 we only act on the alt-screen family (47 / 1047 /
-// 1049) — older `?47` skipped the save, `?1047` skipped the
-// save until xterm 251, `?1049` is "save + switch + clear" /
-// "switch back + restore"; we collapse all three onto the
-// save+switch+clear path since the visible difference is
-// negligible for vim/less/htop.
+//
+// Modes acted on: 7 (DECAWM), 25 (DECTCEM), 47 / 1047 / 1049
+// (alt screen), 1000 / 1002 / 1003 / 1006 (mouse tracking) and
+// 2004 (bracketed paste).  Anything else falls through the final
+// `else` and is discarded, which is the correct response for an
+// unimplemented private mode: silently ignore rather than emit.
+//
+// The alt-screen family collapses to one path — `?47` never saved
+// the cursor and `?1047` did not either before xterm 251, while
+// `?1049` is defined as save + switch + clear.  All three take the
+// save+switch+clear path.
 fn dispatch_private_mode(p: Parser, g: Grid, set: Bool) -> Grid [io]
   let n = parser_param(p, 0, 0)
   if n == 47 or n == 1047 or n == 1049
@@ -520,8 +550,8 @@ fn dispatch_sgr(p: Parser, g: Grid) -> Grid [io]
   //   48;5;N / 48;2;R;G;B — same shape for bg
   // Without this skip the trailing R;G;B values land on
   // 30..37 / 40..47 accidentally and set the wrong color.
-  // For v1 we MAP truecolor → nearest 16-color (lossy but
-  // produces visibly correct hue category); 256-color same.
+  // Both forms are stored at full 24-bit fidelity; nothing is
+  // quantised on the way into a cell.
   let count = parser_param_count(p)
   if count == 0
     grid.grid_sgr_reset(g)
@@ -553,9 +583,9 @@ fn dispatch_sgr(p: Parser, g: Grid) -> Grid [io]
         i = i + 1
     g_acc
 
-// Slice 2b/truecolor: 256-color SGR (`\e[38;5;Nm`) stores N
-// directly in the cell (was quantised to nearest-16).  Shader's
-// 256-element PALETTE looks it up at draw time.
+// Indexed SGR color (`\e[38;5;Nm` / `\e[48;5;Nm`).  N is clamped into
+// 0..255 rather than rejected, because a malformed index should still
+// paint something.
 fn apply_256_color(g: Grid, is_fg: Bool, n: Int) -> Grid [io]
   let c = if n < 0
     0
@@ -563,17 +593,18 @@ fn apply_256_color(g: Grid, is_fg: Bool, n: Int) -> Grid [io]
     255
   else
     n
-  // Slice 9 truecolor: resolve palette index → RGB via the
-  // C-side session palette so the grid cell stores RGB directly.
+  // Resolve the index to RGB here, against the C-side session
+  // palette, so the cell stores RGB.  The consequence is that a
+  // later palette change does not recolour already-painted cells.
   let rgb = novo_term_palette_lookup_h(c)
   if is_fg
     grid.grid_set_fg(g, rgb)
   else
     grid.grid_set_bg(g, rgb)
 
-// Slice 9 truecolor: `\e[38;2;R;G;Bm` stores the full RGB in the
-// cell — no more quantisation to the 6×6×6 cube.  Pack as
-// r<<16 | g<<8 | b.
+// ECMA-48 direct color (`\e[38;2;R;G;Bm`): the full 24 bits reach the
+// cell, with no quantisation to the 6×6×6 cube.  Packed as
+// r<<16 | g<<8 | b, each channel masked to 8 bits.
 fn apply_truecolor(g: Grid, is_fg: Bool, r: Int, gc: Int, b: Int) -> Grid
   let rgb = bits.bor(
               bits.bor(int.shl(bits.band(r, 255), 16),
@@ -597,6 +628,15 @@ fn novo_term_default_fg_get_h() -> Int [io]
 @ffi("novo_term_default_bg_get")
 fn novo_term_default_bg_get_h() -> Int [io]
 
+// One SGR parameter.
+//
+// Note the attribute model this implements: SGR 1 / 4 / 7 each REPLACE
+// the whole attribute mask rather than setting their own bit, and
+// 22 / 24 / 27 clear the whole mask rather than their own bit.  So
+// `CSI 1;4m` ends with underline alone, and `CSI 24m` also drops bold.
+// ECMA-48 defines these as independent switches, and both the cell
+// format (8 attr bits in word 0) and the renderer (which ORs in the
+// cursor-shape bit) already treat attrs as a bitmask.
 fn apply_sgr_one(g: Grid, v: Int) -> Grid [io]
   if v == 0
     grid.grid_sgr_reset(g)
@@ -648,7 +688,7 @@ fn parser_feed_byte(p: Parser, g: Grid, b: Int) -> Grid [io]
   else
     g
 
-// Slice 2b — UTF-8 lead-byte detection.
+// UTF-8 lead-byte detection.
 //
 // 0xxxxxxx → ASCII (1 byte, codepoint = byte).
 // 110xxxxx → 2-byte sequence (lead carries low 5 bits of cp,
@@ -828,7 +868,8 @@ fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io]
       grid.grid_cursor_set(g, g.cursor_row - 1, g.cursor_col)
   else
     // ESC = (DECPAM), ESC > (DECPNM), ESC c (RIS — full reset)
-    // and others — dropped for slice 2.  Return to ground.
+    // and every other ESC final: dropped.  Return to ground so the
+    // following byte is read as text rather than as a continuation.
     set_state(p, st_ground())
     g
 
@@ -862,11 +903,11 @@ fn feed_csi_param(p: Parser, g: Grid, b: Int) -> Grid [io]
     g
 
 fn feed_osc_string(p: Parser, g: Grid, b: Int) -> Grid [io]
-  // OSC payload runs until BEL (0x07) or ST (ESC \).  Slice 9
-  // (window title): we accumulate the payload bytes and finalise
-  // on terminator so the main loop can dispatch OSC 0/1/2 to
-  // XStoreName / _NET_WM_NAME.  Unknown OSC codes are accumulated
-  // too but get dropped by main.nv's dispatcher.
+  // OSC payload runs until BEL (0x07) or ST (ESC \).  Payload bytes
+  // accumulate and are finalised on the terminator, so the caller's
+  // pump can dispatch OSC 0/1/2 (window title) to the window system.
+  // Unknown OSC codes accumulate too and are the caller's to drop —
+  // this module never interprets an OSC payload itself.
   if b == 7
     osc_accum_finalise(p)
     set_state(p, st_ground())
