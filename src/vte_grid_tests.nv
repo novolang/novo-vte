@@ -16,7 +16,7 @@ use parser
 // Render row  as space-separated codepoints — comparing glyph
 // numbers instead of a Str keeps NUL and other non-printables
 // visible in the failure message instead of truncating it.
-fn rowstr(g: grid.Grid, r: Int, cols: Int) -> Str [io]
+fn rowstr(g: grid.Grid, r: Int, cols: Int) -> Str [io, ffi]
     let mut s = ""
     for i in 0..cols
         s = s + str.from_int(grid.cell_glyph(grid.grid_get(g, r, i))) + " "

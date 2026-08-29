@@ -36,16 +36,16 @@
 // binary.
 
 @ffi("novo_array_i64_alloc")
-fn array_i64_alloc_h(capacity: Int) -> Int [io]
+fn array_i64_alloc_h(capacity: Int) -> Int [io, ffi]
 
 @ffi("novo_array_i64_get")
-fn array_i64_get_h(h: Int, i: Int) -> Int [io]
+fn array_i64_get_h(h: Int, i: Int) -> Int [io, ffi]
 
 @ffi("novo_array_i64_set")
-fn array_i64_set_h(h: Int, i: Int, v: Int) [io]
+fn array_i64_set_h(h: Int, i: Int, v: Int) [io, ffi]
 
 @ffi("novo_array_i64_drop")
-fn array_i64_drop_h(h: Int) [io]
+fn array_i64_drop_h(h: Int) [io, ffi]
 
 // ── Constants ───────────────────────────────────────────────────
 
@@ -136,12 +136,12 @@ fn blank_cell() -> Int
 // a grid_set of this value leaves whatever background the cell
 // already had.  And nothing in this package or its consumers calls
 // it today; it is here as part of the exported surface.
-fn pack_cell(glyph: Int, fg_idx: Int, bg_idx: Int, attrs: Int) -> Int [io]
+fn pack_cell(glyph: Int, fg_idx: Int, bg_idx: Int, attrs: Int) -> Int [io, ffi]
   let fg_rgb = novo_term_palette_lookup_h(fg_idx)
   pack_word0(glyph, attrs, fg_rgb)
 
 @ffi("novo_term_palette_lookup")
-fn novo_term_palette_lookup_h(idx: Int) -> Int [io]
+fn novo_term_palette_lookup_h(idx: Int) -> Int [io, ffi]
 
 // ── Grid ────────────────────────────────────────────────────────
 
@@ -284,28 +284,28 @@ fn scrollback_capacity() -> Int
 fn sb_meta_slots() -> Int
   5
 
-fn scrollback_cap(sb: Int) -> Int [io]
+fn scrollback_cap(sb: Int) -> Int [io, ffi]
   array_i64_get_h(sb, 0)
 
-fn scrollback_head(sb: Int) -> Int [io]
+fn scrollback_head(sb: Int) -> Int [io, ffi]
   array_i64_get_h(sb, 1)
 
-fn scrollback_count(sb: Int) -> Int [io]
+fn scrollback_count(sb: Int) -> Int [io, ffi]
   array_i64_get_h(sb, 2)
 
-fn scrollback_view_offset(sb: Int) -> Int [io]
+fn scrollback_view_offset(sb: Int) -> Int [io, ffi]
   array_i64_get_h(sb, 3)
 
-fn scrollback_cols(sb: Int) -> Int [io]
+fn scrollback_cols(sb: Int) -> Int [io, ffi]
   array_i64_get_h(sb, 4)
 
-fn scrollback_set_view_offset(sb: Int, off: Int) [io]
+fn scrollback_set_view_offset(sb: Int, off: Int) [io, ffi]
   array_i64_set_h(sb, 3, off)
 
 // Empty the scrollback: reset head, count and view-offset to 0 (the ring
 // storage is left as-is; count=0 makes every row out of range).  Backs
 // tmux's clear-history.
-fn scrollback_clear(sb: Int) [io]
+fn scrollback_clear(sb: Int) [io, ffi]
   array_i64_set_h(sb, 1, 0)   // head
   array_i64_set_h(sb, 2, 0)   // count
   array_i64_set_h(sb, 3, 0)   // view_offset
@@ -318,7 +318,7 @@ fn scrollback_clear(sb: Int) [io]
 // Scrollback stores 2 i64s per cell, same as the live grid.
 // `src_offset` is a CELL index, not a slot offset; both words are
 // copied per cell so colors travel with their glyphs.
-fn scrollback_push_row(sb: Int, src_handle: Int, src_offset: Int) [io]
+fn scrollback_push_row(sb: Int, src_handle: Int, src_offset: Int) [io, ffi]
   let cap   = scrollback_cap(sb)
   let cols  = scrollback_cols(sb)
   let head  = scrollback_head(sb)
@@ -342,7 +342,7 @@ fn scrollback_push_row(sb: Int, src_handle: Int, src_offset: Int) [io]
 
 // Read word 0 of cell at logical row L (0 = oldest stored), column C.
 // Returns blank word 0 if out of range.
-fn scrollback_get_cell(sb: Int, l: Int, c: Int) -> Int [io]
+fn scrollback_get_cell(sb: Int, l: Int, c: Int) -> Int [io, ffi]
   let cnt  = scrollback_count(sb)
   let cols = scrollback_cols(sb)
   if l < 0 or l >= cnt or c < 0 or c >= cols
@@ -355,7 +355,7 @@ fn scrollback_get_cell(sb: Int, l: Int, c: Int) -> Int [io]
     array_i64_get_h(sb, slot)
 
 // Read word 1 (bg RGB) of cell at logical row L, column C.
-fn scrollback_get_cell_w1(sb: Int, l: Int, c: Int) -> Int [io]
+fn scrollback_get_cell_w1(sb: Int, l: Int, c: Int) -> Int [io, ffi]
   let cnt  = scrollback_count(sb)
   let cols = scrollback_cols(sb)
   if l < 0 or l >= cnt or c < 0 or c >= cols
@@ -368,7 +368,7 @@ fn scrollback_get_cell_w1(sb: Int, l: Int, c: Int) -> Int [io]
     array_i64_get_h(sb, slot + 1)
 
 // Allocate a scrollback array sized for cap rows × cols cells.
-fn scrollback_new(cap: Int, cols: Int) -> Int [io]
+fn scrollback_new(cap: Int, cols: Int) -> Int [io, ffi]
   // 2 i64s per cell, so ring storage is cap × cols × 2.
   let n_slots = sb_meta_slots() + cap * cols * 2
   let h = array_i64_alloc_h(n_slots)
@@ -382,7 +382,7 @@ fn scrollback_new(cap: Int, cols: Int) -> Int [io]
 // Allocate a rows×cols grid pre-filled with blank cells.  Cursor
 // starts at (0, 0).  SGR state at defaults.  Caller must
 // eventually `grid.grid_drop(g)` to release the backing arrays.
-fn grid_new(rows: Int, cols: Int) -> Grid [io]
+fn grid_new(rows: Int, cols: Int) -> Grid [io, ffi]
   // 2 i64s per cell.
   let n_cells = rows * cols
   let n = n_cells * 2
@@ -444,7 +444,7 @@ fn grid_new(rows: Int, cols: Int) -> Grid [io]
 // stdlib's array drop is permissive on stale handles.  Releases
 // both the active cells AND any lazy-allocated alt buffer + the
 // alt_meta side-array + the scrollback ring.
-fn grid_drop(g: Grid) [io]
+fn grid_drop(g: Grid) [io, ffi]
   let alt = array_i64_get_h(g.alt_meta, 1)
   let primary_saved = array_i64_get_h(g.alt_meta, 0)
   if alt >= 0
@@ -474,14 +474,14 @@ fn grid_idx(g: Grid, row: Int, col: Int) -> Int
 // Read word 0 of the cell at (row, col).  Holds glyph + attrs +
 // fg RGB.  Out-of-range coords return a blank word — makes
 // rendering loops safe against transient sub-frame state.
-fn grid_get(g: Grid, row: Int, col: Int) -> Int [io]
+fn grid_get(g: Grid, row: Int, col: Int) -> Int [io, ffi]
   if row < 0 or row >= g.rows or col < 0 or col >= g.cols
     blank_word0()
   else
     array_i64_get_h(g.cells, 2 * grid_idx(g, row, col))
 
 // Read word 1 of the cell at (row, col).  Holds bg RGB.
-fn grid_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
+fn grid_get_w1(g: Grid, row: Int, col: Int) -> Int [io, ffi]
   if row < 0 or row >= g.rows or col < 0 or col >= g.cols
     blank_word1()
   else
@@ -491,19 +491,19 @@ fn grid_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
 // are silently ignored (matches xterm: writes past the right
 // margin are clipped, not errors).  Callers that change colors
 // MUST pair with grid_set_w1 to keep the cell consistent.
-fn grid_set(g: Grid, row: Int, col: Int, packed: Int) -> Grid [io]
+fn grid_set(g: Grid, row: Int, col: Int, packed: Int) -> Grid [io, ffi]
   if row >= 0 and row < g.rows and col >= 0 and col < g.cols
     array_i64_set_h(g.cells, 2 * grid_idx(g, row, col), packed)
   g
 
 // Write word 1 of the cell at (row, col).
-fn grid_set_w1(g: Grid, row: Int, col: Int, packed: Int) -> Grid [io]
+fn grid_set_w1(g: Grid, row: Int, col: Int, packed: Int) -> Grid [io, ffi]
   if row >= 0 and row < g.rows and col >= 0 and col < g.cols
     array_i64_set_h(g.cells, 2 * grid_idx(g, row, col) + 1, packed)
   g
 
 // Convenience: write both words atomically.
-fn grid_set_pair(g: Grid, row: Int, col: Int, w0: Int, w1: Int) -> Grid [io]
+fn grid_set_pair(g: Grid, row: Int, col: Int, w0: Int, w1: Int) -> Grid [io, ffi]
   if row >= 0 and row < g.rows and col >= 0 and col < g.cols
     let idx = 2 * grid_idx(g, row, col)
     array_i64_set_h(g.cells, idx,     w0)
@@ -514,13 +514,13 @@ fn grid_set_pair(g: Grid, row: Int, col: Int, w0: Int, w1: Int) -> Grid [io]
 // of going through Grid, for the scroll / erase / line-shift loops
 // below.  Both words move per cell; moving only word 0 would leave
 // each cell's background behind and desync colors from glyphs.
-fn cells_copy(dst: Int, dst_cell_idx: Int, src: Int, src_cell_idx: Int) [io]
+fn cells_copy(dst: Int, dst_cell_idx: Int, src: Int, src_cell_idx: Int) [io, ffi]
   let s = 2 * src_cell_idx
   let d = 2 * dst_cell_idx
   array_i64_set_h(dst, d,     array_i64_get_h(src, s))
   array_i64_set_h(dst, d + 1, array_i64_get_h(src, s + 1))
 
-fn cells_blank(arr: Int, cell_idx: Int, blank_w0: Int, blank_w1: Int) [io]
+fn cells_blank(arr: Int, cell_idx: Int, blank_w0: Int, blank_w1: Int) [io, ffi]
   let d = 2 * cell_idx
   array_i64_set_h(arr, d,     blank_w0)
   array_i64_set_h(arr, d + 1, blank_w1)
@@ -537,7 +537,7 @@ fn clamp(v: Int, lo: Int, hi: Int) -> Int
   else
     v
 
-fn grid_cursor_set(g: Grid, row: Int, col: Int) -> Grid [io]
+fn grid_cursor_set(g: Grid, row: Int, col: Int) -> Grid [io, ffi]
   // Deferred wrap: any explicit cursor positioning clears the
   // right-margin pending-wrap flag.  Otherwise the
   // saved wrap state would fire on the next print after a CUP
@@ -547,7 +547,7 @@ fn grid_cursor_set(g: Grid, row: Int, col: Int) -> Grid [io]
   g.cursor_col = clamp(col, 0, g.cols - 1)
   g
 
-fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io]
+fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io, ffi]
   grid_cursor_set(g, g.cursor_row + dr, g.cursor_col + dc)
 
 // fg/bg take 24-bit RGB, never a palette index: the parser resolves
@@ -570,12 +570,12 @@ fn grid_set_attrs(g: Grid, attrs: Int) -> Grid
 // takes effect on the very next attribute reset — which is what apps
 // emit right after changing them (OSC, then clear, then SGR 0).
 @ffi("novo_term_default_fg_get")
-fn _td_fg_get_h() -> Int [io]
+fn _td_fg_get_h() -> Int [io, ffi]
 
 @ffi("novo_term_default_bg_get")
-fn _td_bg_get_h() -> Int [io]
+fn _td_bg_get_h() -> Int [io, ffi]
 
-fn grid_sgr_reset(g: Grid) -> Grid [io]
+fn grid_sgr_reset(g: Grid) -> Grid [io, ffi]
   g.fg = _td_fg_get_h()
   g.bg = _td_bg_get_h()
   g.attrs = 0
@@ -586,17 +586,17 @@ fn grid_sgr_reset(g: Grid) -> Grid [io]
 // Scroll-region accessors.  Default is 0..rows-1 (whole grid).
 // Set via DECSTBM (`\e[Pt;Pb r`) — Neovim splits rely on this to
 // scroll one pane without disturbing others.
-fn grid_region_top(g: Grid) -> Int [io]
+fn grid_region_top(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 8)
 
-fn grid_region_bottom(g: Grid) -> Int [io]
+fn grid_region_bottom(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 9)
 
 // Set the scroll region.  top/bottom are 0-indexed inclusive
 // row numbers.  Clamps into [0, rows-1] and ensures top ≤
 // bottom.  No-op if top ≥ rows (defensive — some sequences
 // arrive with stale row counts post-resize).
-fn grid_set_scroll_region(g: Grid, top: Int, bottom: Int) -> Grid [io]
+fn grid_set_scroll_region(g: Grid, top: Int, bottom: Int) -> Grid [io, ffi]
   let t = if top    < 0           then 0           else top
   let b = if bottom >= g.rows     then g.rows - 1  else bottom
   if t >= g.rows or t > b
@@ -612,7 +612,7 @@ fn grid_set_scroll_region(g: Grid, top: Int, bottom: Int) -> Grid [io]
 // region is the whole grid AND we're in the primary buffer,
 // the about-to-be-discarded top row enters the scrollback ring
 // (xterm convention — partial-region scrolls don't push).
-fn grid_scroll_up(g: Grid) -> Grid [io]
+fn grid_scroll_up(g: Grid) -> Grid [io, ffi]
   let top    = grid_region_top(g)
   let bot    = grid_region_bottom(g)
   let using_alt = array_i64_get_h(g.alt_meta, 2)
@@ -646,7 +646,7 @@ fn grid_scroll_up(g: Grid) -> Grid [io]
 // Put a glyph at the cursor, advance the cursor one column.  Wraps to
 // the next row at the right margin; scrolls when the cursor crosses
 // the bottom edge.
-fn grid_put_char(g: Grid, glyph: Int) -> Grid [io]
+fn grid_put_char(g: Grid, glyph: Int) -> Grid [io, ffi]
   // Any POSITIVE codepoint is accepted, including C0 controls: the
   // parser routes real control bytes to the dedicated handlers before
   // reaching here, and the renderer's atlas mapping decides which slot
@@ -710,47 +710,47 @@ fn grid_put_char(g: Grid, glyph: Int) -> Grid [io]
 // Per-row wrap-flag accessors.  Bounds-checked: a stale row index
 // (after scroll-up shifts) reads as 0 so resize-time reflow doesn't
 // double-count a logical line.
-fn grid_row_wrapped(g: Grid, row: Int) -> Int [io]
+fn grid_row_wrapped(g: Grid, row: Int) -> Int [io, ffi]
   if row < 0 or row >= g.rows
     0
   else
     array_i64_get_h(g.wrap_flags, row)
 
-fn grid_set_row_wrapped(g: Grid, row: Int, on: Int) [io]
+fn grid_set_row_wrapped(g: Grid, row: Int, on: Int) [io, ffi]
   if row >= 0 and row < g.rows
     array_i64_set_h(g.wrap_flags, row, if on != 0 then 1 else 0)
 
 // DECAWM accessor + setter.  Slot 10 of alt_meta; defaults to 1
 // (autowrap on) per xterm.  When 0, grid_put_char clamps cursor
 // at the right margin instead of wrapping.
-fn grid_autowrap(g: Grid) -> Int [io]
+fn grid_autowrap(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 10)
 
-fn grid_set_autowrap(g: Grid, on: Bool) -> Grid [io]
+fn grid_set_autowrap(g: Grid, on: Bool) -> Grid [io, ffi]
   array_i64_set_h(g.alt_meta, 10, if on then 1 else 0)
   g
 
 // wrap_pending accessor + mutators.  Slot 11; set when a put_char
 // fills the rightmost column, cleared by the next put_char (after
 // triggering the deferred wrap) or by any explicit cursor move.
-fn grid_wrap_pending(g: Grid) -> Int [io]
+fn grid_wrap_pending(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 11)
 
-fn grid_set_wrap_pending(g: Grid) -> Grid [io]
+fn grid_set_wrap_pending(g: Grid) -> Grid [io, ffi]
   array_i64_set_h(g.alt_meta, 11, 1)
   g
 
-fn grid_clear_wrap_pending(g: Grid) -> Grid [io]
+fn grid_clear_wrap_pending(g: Grid) -> Grid [io, ffi]
   array_i64_set_h(g.alt_meta, 11, 0)
   g
 
 // Bracketed-paste accessor + setter.  Slot 12; toggled by
 // DECSET/RST 2004.  Read by the render.nv paste handlers to
 // decide whether to wrap pasted bytes in ESC [200~ … ESC [201~.
-fn grid_bracketed_paste(g: Grid) -> Int [io]
+fn grid_bracketed_paste(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 12)
 
-fn grid_set_bracketed_paste(g: Grid, on: Bool) -> Grid [io]
+fn grid_set_bracketed_paste(g: Grid, on: Bool) -> Grid [io, ffi]
   array_i64_set_h(g.alt_meta, 12, if on then 1 else 0)
   g
 
@@ -758,10 +758,10 @@ fn grid_set_bracketed_paste(g: Grid, on: Bool) -> Grid [io]
 // the xterm spec (0/1 blink block, 2 steady block, ..., 6 steady
 // bar).  Renderer reads via grid_cursor_shape and branches on
 // the value when painting the cursor cell.
-fn grid_cursor_shape(g: Grid) -> Int [io]
+fn grid_cursor_shape(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 13)
 
-fn grid_set_cursor_shape(g: Grid, shape: Int) -> Grid [io]
+fn grid_set_cursor_shape(g: Grid, shape: Int) -> Grid [io, ffi]
   let s = if shape < 0 or shape > 6 then 2 else shape
   array_i64_set_h(g.alt_meta, 13, s)
   g
@@ -770,10 +770,10 @@ fn grid_set_cursor_shape(g: Grid, shape: Int) -> Grid [io]
 // hide the cursor (`?25l`) while repainting and show it (`?25h`)
 // once the frame settles; the renderer honours this so the host
 // cursor doesn't flicker at intermediate paint positions.
-fn grid_cursor_visible(g: Grid) -> Int [io]
+fn grid_cursor_visible(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 15)
 
-fn grid_set_cursor_visible(g: Grid, on: Bool) -> Grid [io]
+fn grid_set_cursor_visible(g: Grid, on: Bool) -> Grid [io, ffi]
   array_i64_set_h(g.alt_meta, 15, if on then 1 else 0)
   g
 
@@ -782,21 +782,21 @@ fn grid_set_cursor_visible(g: Grid, on: Bool) -> Grid [io]
 // clears it, so the shape is re-emitted exactly on the app's mode
 // changes rather than every frame (which would flood output) or
 // only on a value change (which would miss a re-assert of block 2).
-fn grid_cursor_shape_dirty(g: Grid) -> Int [io]
+fn grid_cursor_shape_dirty(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 16)
 
-fn grid_mark_cursor_shape_dirty(g: Grid) -> Grid [io]
+fn grid_mark_cursor_shape_dirty(g: Grid) -> Grid [io, ffi]
   array_i64_set_h(g.alt_meta, 16, 1)
   g
 
-fn grid_clear_cursor_shape_dirty(g: Grid) -> Grid [io]
+fn grid_clear_cursor_shape_dirty(g: Grid) -> Grid [io, ffi]
   array_i64_set_h(g.alt_meta, 16, 0)
   g
 
 // Mouse-mode bitmask accessor + setter.  Caller (parser) ORs
 // or ANDs in individual bits via grid_mouse_mode_bit_on/off
 // for the DECSET/RST entry points.
-fn grid_mouse_mode(g: Grid) -> Int [io]
+fn grid_mouse_mode(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 14)
 
 // Pure mouse-tracking gate + SGR button-byte, split out of
@@ -851,12 +851,12 @@ fn grid_mouse_sgr_code(mode: Int, mods: Int, motion: Bool, button: Int) -> Int
       let mot_bit  = if motion then 32 else 0
       eff_button + ctrl_bit + alt_bit + mot_bit
 
-fn grid_mouse_mode_bit_on(g: Grid, bit: Int) -> Grid [io]
+fn grid_mouse_mode_bit_on(g: Grid, bit: Int) -> Grid [io, ffi]
   let cur = array_i64_get_h(g.alt_meta, 14)
   array_i64_set_h(g.alt_meta, 14, bits.bor(cur, bit))
   g
 
-fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io]
+fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io, ffi]
   let cur = array_i64_get_h(g.alt_meta, 14)
   // Clear `bit`: AND with ~bit.  No bitwise-not in Novo std —
   // use XOR with all-ones-mask = ~bit when current bit is set.
@@ -868,14 +868,14 @@ fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io]
   array_i64_set_h(g.alt_meta, 14, new)
   g
 
-fn grid_backspace(g: Grid) -> Grid [io]
+fn grid_backspace(g: Grid) -> Grid [io, ffi]
   if g.cursor_col > 0
     grid_cursor_set(g, g.cursor_row, g.cursor_col - 1)
   else
     g
 
 // Tab to the next 8-column stop, clipped to the right margin.
-fn grid_tab(g: Grid) -> Grid [io]
+fn grid_tab(g: Grid) -> Grid [io, ffi]
   let next = (g.cursor_col / 8 + 1) * 8
   let clipped = if next >= g.cols
     g.cols - 1
@@ -883,14 +883,14 @@ fn grid_tab(g: Grid) -> Grid [io]
     next
   grid_cursor_set(g, g.cursor_row, clipped)
 
-fn grid_carriage_return(g: Grid) -> Grid [io]
+fn grid_carriage_return(g: Grid) -> Grid [io, ffi]
   grid_cursor_set(g, g.cursor_row, 0)
 
 // Line feed.  Moves the cursor down one row.  If already on the
 // scroll-region bottom row, scrolls (within the region) and
 // stays put.  Does NOT reset the column (matches xterm — CR has
 // to follow if you want column 0).
-fn grid_line_feed(g: Grid) -> Grid [io]
+fn grid_line_feed(g: Grid) -> Grid [io, ffi]
   let bot = grid_region_bottom(g)
   if g.cursor_row >= bot
     let g2 = grid_scroll_up(g)
@@ -900,7 +900,7 @@ fn grid_line_feed(g: Grid) -> Grid [io]
 
 // ── Erase ──────────────────────────────────────────────────────
 
-fn fill_row_range(g: Grid, row: Int, c0: Int, c1: Int) [io]
+fn fill_row_range(g: Grid, row: Int, c0: Int, c1: Int) [io, ffi]
   let bw0 = blank_word0()
   let bw1 = blank_word1()
   for c in c0..c1
@@ -908,7 +908,7 @@ fn fill_row_range(g: Grid, row: Int, c0: Int, c1: Int) [io]
 
 // EL — Erase in Line.  mode 0: cursor → end of line.
 // mode 1: start of line → cursor (inclusive).  mode 2: whole line.
-fn grid_erase_line(g: Grid, mode: Int) -> Grid [io]
+fn grid_erase_line(g: Grid, mode: Int) -> Grid [io, ffi]
   if mode == 0
     fill_row_range(g, g.cursor_row, g.cursor_col, g.cols)
   if mode == 1
@@ -919,7 +919,7 @@ fn grid_erase_line(g: Grid, mode: Int) -> Grid [io]
 
 // ED — Erase in Display.  mode 0: cursor → end of display.
 // mode 1: start → cursor.  mode 2: whole display.
-fn grid_erase_display(g: Grid, mode: Int) -> Grid [io]
+fn grid_erase_display(g: Grid, mode: Int) -> Grid [io, ffi]
   if mode == 0
     fill_row_range(g, g.cursor_row, g.cursor_col, g.cols)
     for r in g.cursor_row + 1..g.rows
@@ -944,7 +944,7 @@ fn grid_erase_display(g: Grid, mode: Int) -> Grid [io]
 // IL — insert n blank lines at cursor row, push existing rows
 // down within region.  Cursor stays put (column unchanged).
 // Rows below region_bottom are unaffected.
-fn grid_insert_lines(g: Grid, n: Int) -> Grid [io]
+fn grid_insert_lines(g: Grid, n: Int) -> Grid [io, ffi]
   if n < 1
     g
   else
@@ -977,7 +977,7 @@ fn grid_insert_lines(g: Grid, n: Int) -> Grid [io]
       g
 
 // DL — delete n lines at cursor row, pull rows up within region.
-fn grid_delete_lines(g: Grid, n: Int) -> Grid [io]
+fn grid_delete_lines(g: Grid, n: Int) -> Grid [io, ffi]
   if n < 1
     g
   else
@@ -1010,7 +1010,7 @@ fn grid_delete_lines(g: Grid, n: Int) -> Grid [io]
 // ECH — erase n chars at cursor (write blanks).  Cursor stays.
 // Critical for pane-aware redraws: lets apps clear specific
 // cells without `\e[K` which would extend past the pane border.
-fn grid_erase_chars(g: Grid, n: Int) -> Grid [io]
+fn grid_erase_chars(g: Grid, n: Int) -> Grid [io, ffi]
   if n < 1
     g
   else
@@ -1027,7 +1027,7 @@ fn grid_erase_chars(g: Grid, n: Int) -> Grid [io]
 
 // ICH — insert n blank chars at cursor, shift right within row.
 // Cells past the right margin fall off.  Cursor unchanged.
-fn grid_insert_chars(g: Grid, n: Int) -> Grid [io]
+fn grid_insert_chars(g: Grid, n: Int) -> Grid [io, ffi]
   if n < 1
     g
   else
@@ -1049,7 +1049,7 @@ fn grid_insert_chars(g: Grid, n: Int) -> Grid [io]
     g
 
 // DCH — delete n chars at cursor, shift left within row.
-fn grid_delete_chars(g: Grid, n: Int) -> Grid [io]
+fn grid_delete_chars(g: Grid, n: Int) -> Grid [io, ffi]
   if n < 1
     g
   else
@@ -1071,7 +1071,7 @@ fn grid_delete_chars(g: Grid, n: Int) -> Grid [io]
 
 // SU — scroll up n lines within the active region.  Same as
 // calling grid_scroll_up n times but cheaper for n>1.
-fn grid_scroll_region_up(g: Grid, n: Int) -> Grid [io]
+fn grid_scroll_region_up(g: Grid, n: Int) -> Grid [io, ffi]
   let mut left = n
   let mut g_acc = g
   while left > 0
@@ -1082,7 +1082,7 @@ fn grid_scroll_region_up(g: Grid, n: Int) -> Grid [io]
 // SD — scroll down n lines: insert n blank lines at region_top,
 // rows below shift down within region.  Effectively IL at the
 // top of the region.
-fn grid_scroll_region_down(g: Grid, n: Int) -> Grid [io]
+fn grid_scroll_region_down(g: Grid, n: Int) -> Grid [io, ffi]
   if n < 1
     g
   else
@@ -1127,7 +1127,7 @@ fn grid_scroll_region_down(g: Grid, n: Int) -> Grid [io]
 
 // Save current cursor + SGR state into meta slots 3..7.  No
 // buffer toggle.
-fn grid_decsc(g: Grid) -> Grid [io]
+fn grid_decsc(g: Grid) -> Grid [io, ffi]
   array_i64_set_h(g.alt_meta, 3, g.cursor_row)
   array_i64_set_h(g.alt_meta, 4, g.cursor_col)
   array_i64_set_h(g.alt_meta, 5, g.fg)
@@ -1136,7 +1136,7 @@ fn grid_decsc(g: Grid) -> Grid [io]
   g
 
 // Restore cursor + SGR from meta slots 3..7.  No buffer toggle.
-fn grid_decrc(g: Grid) -> Grid [io]
+fn grid_decrc(g: Grid) -> Grid [io, ffi]
   let r     = array_i64_get_h(g.alt_meta, 3)
   let c     = array_i64_get_h(g.alt_meta, 4)
   let fg    = array_i64_get_h(g.alt_meta, 5)
@@ -1150,7 +1150,7 @@ fn grid_decrc(g: Grid) -> Grid [io]
   g
 
 // Allocate the alt buffer lazily (first time we enter alt).
-fn alloc_alt_buf(g: Grid) -> Int [io]
+fn alloc_alt_buf(g: Grid) -> Int [io, ffi]
   // 2 i64s per cell.
   let n_cells = g.rows * g.cols
   let h = array_i64_alloc_h(n_cells * 2)
@@ -1168,7 +1168,7 @@ fn alloc_alt_buf(g: Grid) -> Int [io]
 // to the alt buffer (lazy-allocate on first call), clears the
 // alt buffer, and moves cursor to (0, 0) with SGR reset.
 // Idempotent: re-entering when already in alt is a no-op clear.
-fn grid_enter_alt_screen(g: Grid) -> Grid [io]
+fn grid_enter_alt_screen(g: Grid) -> Grid [io, ffi]
   let using_alt = array_i64_get_h(g.alt_meta, 2)
   if using_alt == 1
     // Already in alt — treat as a fresh enter: clear + reset
@@ -1233,7 +1233,7 @@ fn grid_enter_alt_screen(g: Grid) -> Grid [io]
 // primary handle stashed in meta[0], restores saved cursor +
 // SGR.  No-op if we're already in primary mode (defensive — the
 // terminal may legitimately receive duplicate ?1049l).
-fn grid_exit_alt_screen(g: Grid) -> Grid [io]
+fn grid_exit_alt_screen(g: Grid) -> Grid [io, ffi]
   let using_alt = array_i64_get_h(g.alt_meta, 2)
   if using_alt != 1
     g
@@ -1273,7 +1273,7 @@ fn grid_exit_alt_screen(g: Grid) -> Grid [io]
 //
 // Returns a new Grid with the new dims + new cells handle.
 
-fn alloc_blank_cells(rows: Int, cols: Int) -> Int [io]
+fn alloc_blank_cells(rows: Int, cols: Int) -> Int [io, ffi]
   let n_cells = rows * cols
   let h = array_i64_alloc_h(n_cells * 2)
   let bw0 = blank_word0()
@@ -1288,7 +1288,7 @@ fn alloc_blank_cells(rows: Int, cols: Int) -> Int [io]
 // Find a row's content length (highest non-blank column
 // + 1; 0 for entirely-blank row).  Used by reflow_cells to know
 // how many cells to copy from each old row.
-fn row_content_len(cells: Int, cols: Int, row: Int) -> Int [io]
+fn row_content_len(cells: Int, cols: Int, row: Int) -> Int [io, ffi]
   let bw0 = blank_word0()
   let mut last = 0
   let mut c = cols - 1
@@ -1320,7 +1320,7 @@ fn row_content_len(cells: Int, cols: Int, row: Int) -> Int [io]
 fn reflow_cells(old_cells: Int, old_cols: Int, old_rows: Int,
                  old_wrap: Int,
                  new_cells: Int, new_cols: Int, new_rows: Int,
-                 new_wrap: Int) -> Int [io]
+                 new_wrap: Int) -> Int [io, ffi]
   let mut new_r = 0
   let mut new_c = 0
   let mut old_r = 0
@@ -1358,7 +1358,7 @@ fn reflow_cells(old_cells: Int, old_cols: Int, old_rows: Int,
 // new_rows/cols).  2 i64s per cell.
 fn copy_cells(old_cells: Int, old_cols: Int,
                new_cells: Int, new_cols: Int,
-               copy_rows: Int, copy_cols: Int) [io]
+               copy_rows: Int, copy_cols: Int) [io, ffi]
   let mut r = 0
   while r < copy_rows
     let mut c = 0
@@ -1370,7 +1370,7 @@ fn copy_cells(old_cells: Int, old_cols: Int,
       c = c + 1
     r = r + 1
 
-fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io]
+fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io, ffi]
   if new_rows == g.rows and new_cols == g.cols
     g
   else
@@ -1475,7 +1475,7 @@ fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io]
 // At K = 0 the formula collapses to the live grid (no scrollback
 // touched).
 
-fn grid_view_get(g: Grid, row: Int, col: Int) -> Int [io]
+fn grid_view_get(g: Grid, row: Int, col: Int) -> Int [io, ffi]
   // Alt-screen content isn't pushed to scrollback, so showing
   // scrollback while in alt would commingle vim/less UI with
   // pre-vim shell output.  Bypass the offset when in alt mode.
@@ -1494,7 +1494,7 @@ fn grid_view_get(g: Grid, row: Int, col: Int) -> Int [io]
       grid_get(g, virt - count, col)
 
 // Word 1 (bg_rgb) of the view-aware cell read.
-fn grid_view_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
+fn grid_view_get_w1(g: Grid, row: Int, col: Int) -> Int [io, ffi]
   let using_alt = array_i64_get_h(g.alt_meta, 2)
   if using_alt == 1
     grid_get_w1(g, row, col)
@@ -1509,7 +1509,7 @@ fn grid_view_get_w1(g: Grid, row: Int, col: Int) -> Int [io]
     else
       grid_get_w1(g, virt - count, col)
 
-fn grid_view_offset(g: Grid) -> Int [io]
+fn grid_view_offset(g: Grid) -> Int [io, ffi]
   scrollback_view_offset(g.scrollback)
 
 // Public query for the alt-screen flag, for consumers outside this
@@ -1519,7 +1519,7 @@ fn grid_view_offset(g: Grid) -> Int [io]
 // app inside handle it.  Internal helpers already check the
 // flag directly via `array_i64_get_h(g.alt_meta, 2)`; this is
 // the same value exported.
-fn grid_using_alt(g: Grid) -> Int [io]
+fn grid_using_alt(g: Grid) -> Int [io, ffi]
   array_i64_get_h(g.alt_meta, 2)
 
 // Adjust the scrollback view offset by `delta` lines (positive =
@@ -1527,7 +1527,7 @@ fn grid_using_alt(g: Grid) -> Int [io]
 // live).  Clamps to [0, scrollback_count].  No-op when in alt
 // screen (alt-buffer content isn't pushed to scrollback, so
 // scrolling there would jump to stale history).
-fn grid_scroll_view(g: Grid, delta: Int) -> Grid [io]
+fn grid_scroll_view(g: Grid, delta: Int) -> Grid [io, ffi]
   let using_alt = array_i64_get_h(g.alt_meta, 2)
   if using_alt == 1
     g
@@ -1548,7 +1548,7 @@ fn grid_scroll_view(g: Grid, delta: Int) -> Grid [io]
 // (grid_put_char, grid_carriage_return, etc.) so any shell
 // output snaps the view back to the bottom — matches xterm /
 // gnome-terminal behavior.
-fn grid_reset_view(g: Grid) -> Grid [io]
+fn grid_reset_view(g: Grid) -> Grid [io, ffi]
   scrollback_set_view_offset(g.scrollback, 0)
   g
 
@@ -1558,7 +1558,7 @@ fn grid_reset_view(g: Grid) -> Grid [io]
 // using the cell glyphs only (no color escapes — this is the
 // debug path).  Cursor position is marked with a leading "@ R,C"
 // header so test harnesses can assert on it.
-fn grid_to_string(g: Grid) -> Str [io]
+fn grid_to_string(g: Grid) -> Str [io, ffi]
   let mut out = "@ " + str.from_int(g.cursor_row) + "," + str.from_int(g.cursor_col) + "\n"
   for r in 0..g.rows
     for c in 0..g.cols

@@ -61,16 +61,16 @@
 // trick grid.nv uses).  Resolves to the same C symbols.
 
 @ffi("novo_array_i64_alloc")
-fn array_i64_alloc_h(capacity: Int) -> Int [io]
+fn array_i64_alloc_h(capacity: Int) -> Int [io, ffi]
 
 @ffi("novo_array_i64_get")
-fn array_i64_get_h(h: Int, i: Int) -> Int [io]
+fn array_i64_get_h(h: Int, i: Int) -> Int [io, ffi]
 
 @ffi("novo_array_i64_set")
-fn array_i64_set_h(h: Int, i: Int, v: Int) [io]
+fn array_i64_set_h(h: Int, i: Int, v: Int) [io, ffi]
 
 @ffi("novo_array_i64_drop")
-fn array_i64_drop_h(h: Int) [io]
+fn array_i64_drop_h(h: Int) [io, ffi]
 
 use grid
 
@@ -150,7 +150,7 @@ fn response_cap() -> Int
 fn osc_cap() -> Int
   512
 
-fn parser_new() -> Parser [io]
+fn parser_new() -> Parser [io, ffi]
   let h    = array_i64_alloc_h(slots_total())
   let resp = array_i64_alloc_h(response_cap() + 1)
   array_i64_set_h(resp, 0, 0)
@@ -160,26 +160,26 @@ fn parser_new() -> Parser [io]
   array_i64_set_h(osc, 2, 0)   // payload len
   Parser { slots: h, response: resp, osc: osc }
 
-fn parser_drop(p: Parser) [io]
+fn parser_drop(p: Parser) [io, ffi]
   array_i64_drop_h(p.slots)
   array_i64_drop_h(p.response)
   array_i64_drop_h(p.osc)
 
 // ── OSC dispatch accessors ─────────────────────────────────────
 
-fn parser_osc_pending(p: Parser) -> Bool [io]
+fn parser_osc_pending(p: Parser) -> Bool [io, ffi]
   array_i64_get_h(p.osc, 0) == 1
 
-fn parser_osc_code(p: Parser) -> Int [io]
+fn parser_osc_code(p: Parser) -> Int [io, ffi]
   array_i64_get_h(p.osc, 1)
 
-fn parser_osc_payload_len(p: Parser) -> Int [io]
+fn parser_osc_payload_len(p: Parser) -> Int [io, ffi]
   array_i64_get_h(p.osc, 2)
 
-fn parser_osc_payload_byte(p: Parser, i: Int) -> Int [io]
+fn parser_osc_payload_byte(p: Parser, i: Int) -> Int [io, ffi]
   array_i64_get_h(p.osc, 3 + i)
 
-fn parser_osc_clear(p: Parser) [io]
+fn parser_osc_clear(p: Parser) [io, ffi]
   array_i64_set_h(p.osc, 0, 0)
   array_i64_set_h(p.osc, 1, 0)
   array_i64_set_h(p.osc, 2, 0)
@@ -187,13 +187,13 @@ fn parser_osc_clear(p: Parser) [io]
 // Push one byte into the in-progress OSC payload accumulator.
 // Cap-bounded; bytes past the limit are dropped (rare for window
 // titles, accept for the corner-case longer payloads).
-fn osc_accum_append(p: Parser, b: Int) [io]
+fn osc_accum_append(p: Parser, b: Int) [io, ffi]
   let n = array_i64_get_h(p.osc, 2)
   if n < osc_cap()
     array_i64_set_h(p.osc, 3 + n, b)
     array_i64_set_h(p.osc, 2, n + 1)
 
-fn osc_accum_reset(p: Parser) [io]
+fn osc_accum_reset(p: Parser) [io, ffi]
   array_i64_set_h(p.osc, 2, 0)
   array_i64_set_h(p.osc, 1, 0)
 
@@ -203,7 +203,7 @@ fn osc_accum_reset(p: Parser) [io]
 // Called when feed_osc_string sees BEL or ST.  Robust on
 // malformed OSCs (no digits, no ';') — code stays 0, payload
 // is the whole raw payload; main.nv ignores unrecognised codes.
-fn osc_accum_finalise(p: Parser) [io]
+fn osc_accum_finalise(p: Parser) [io, ffi]
   let n = array_i64_get_h(p.osc, 2)
   // Parse the leading digits as the OSC code.
   let mut code = 0
@@ -237,22 +237,22 @@ fn osc_accum_finalise(p: Parser) [io]
 
 // ── Response queue accessors ───────────────────────────────────
 
-fn parser_response_count(p: Parser) -> Int [io]
+fn parser_response_count(p: Parser) -> Int [io, ffi]
   array_i64_get_h(p.response, 0)
 
-fn parser_response_byte_at(p: Parser, i: Int) -> Int [io]
+fn parser_response_byte_at(p: Parser, i: Int) -> Int [io, ffi]
   array_i64_get_h(p.response, 1 + i)
 
-fn parser_response_clear(p: Parser) [io]
+fn parser_response_clear(p: Parser) [io, ffi]
   array_i64_set_h(p.response, 0, 0)
 
-fn response_append_byte(p: Parser, b: Int) [io]
+fn response_append_byte(p: Parser, b: Int) [io, ffi]
   let n = parser_response_count(p)
   if n < response_cap()
     array_i64_set_h(p.response, 1 + n, b)
     array_i64_set_h(p.response, 0, n + 1)
 
-fn response_append_str(p: Parser, s: Str) [io]
+fn response_append_str(p: Parser, s: Str) [io, ffi]
   let n = str.len(s)
   let mut i = 0
   while i < n
@@ -261,15 +261,15 @@ fn response_append_str(p: Parser, s: Str) [io]
 
 // Convenience getters used by tests + the grid renderer.
 
-fn parser_state(p: Parser) -> Int [io]
+fn parser_state(p: Parser) -> Int [io, ffi]
   array_i64_get_h(p.slots, slot_state())
 
-fn parser_param_count(p: Parser) -> Int [io]
+fn parser_param_count(p: Parser) -> Int [io, ffi]
   array_i64_get_h(p.slots, slot_param_count())
 
 // Read param `i`, defaulting to `default` when the parser only saw
 // an empty position (e.g. CSI ;5H has param 0 missing → default).
-fn parser_param(p: Parser, i: Int, default: Int) -> Int [io]
+fn parser_param(p: Parser, i: Int, default: Int) -> Int [io, ffi]
   let count = parser_param_count(p)
   if i >= count
     default
@@ -283,7 +283,7 @@ fn parser_param(p: Parser, i: Int, default: Int) -> Int [io]
 
 // ── Internal helpers ───────────────────────────────────────────
 
-fn reset_csi(p: Parser) [io]
+fn reset_csi(p: Parser) [io, ffi]
   array_i64_set_h(p.slots, slot_param_count(),    0)
   array_i64_set_h(p.slots, slot_current_param(),  0)
   array_i64_set_h(p.slots, slot_has_current(),    0)
@@ -293,10 +293,10 @@ fn reset_csi(p: Parser) [io]
   for i in 0..max_params()
     array_i64_set_h(p.slots, slot_params_base() + i, -1)
 
-fn set_state(p: Parser, s: Int) [io]
+fn set_state(p: Parser, s: Int) [io, ffi]
   array_i64_set_h(p.slots, slot_state(), s)
 
-fn flush_current_param(p: Parser) [io]
+fn flush_current_param(p: Parser) [io, ffi]
   if array_i64_get_h(p.slots, slot_has_current()) == 1
     let cnt = array_i64_get_h(p.slots, slot_param_count())
     if cnt < max_params()
@@ -306,7 +306,7 @@ fn flush_current_param(p: Parser) [io]
     array_i64_set_h(p.slots, slot_current_param(), 0)
     array_i64_set_h(p.slots, slot_has_current(),   0)
 
-fn open_empty_param_slot(p: Parser) [io]
+fn open_empty_param_slot(p: Parser) [io, ffi]
   // For "CSI 1;;3 m" the middle slot is empty; we represent it as
   // -1 so parser_param falls back to its caller-supplied default.
   let cnt = array_i64_get_h(p.slots, slot_param_count())
@@ -321,7 +321,7 @@ fn open_empty_param_slot(p: Parser) [io]
 // startup and waits ~1 s for the reply before falling back to slow
 // timeouts.  Primary (`\e[c`) → VT220+colors; secondary (`\e[>c`,
 // intermediate '>') → version.
-fn csi_da(p: Parser, g: Grid) -> Grid [io]
+fn csi_da(p: Parser, g: Grid) -> Grid [io, ffi]
   let intm = array_i64_get_h(p.slots, slot_intermediate())
   if intm == 62
     // CSI > c — secondary DA.  Format: ESC [ > Pp ; Pv ; Pc c
@@ -336,7 +336,7 @@ fn csi_da(p: Parser, g: Grid) -> Grid [io]
 // 'n' (0x6E) = DSR — Device Status Report.
 //   `\e[5n` → reply `\e[0n` (terminal OK)
 //   `\e[6n` → reply `\e[<row>;<col>R` (1-indexed cursor pos)
-fn csi_dsr(p: Parser, g: Grid) -> Grid [io]
+fn csi_dsr(p: Parser, g: Grid) -> Grid [io, ffi]
   let mode = parser_param(p, 0, 0)
   if mode == 5
     response_append_str(p, str.from_char(27) + "[0n")
@@ -351,7 +351,7 @@ fn csi_dsr(p: Parser, g: Grid) -> Grid [io]
 // 'r' (0x72) = DECSTBM — set top/bottom margins (scroll region).
 // Params are 1-indexed inclusive.  No params = full grid; first param
 // missing or 1 = top of grid; second omitted = bottom of grid.
-fn csi_set_scroll_region(p: Parser, g: Grid) -> Grid [io]
+fn csi_set_scroll_region(p: Parser, g: Grid) -> Grid [io, ffi]
   let top = parser_param(p, 0, 1) - 1
   let bot = parser_param(p, 1, g.rows) - 1
   grid.grid_set_scroll_region(g, top, bot)
@@ -360,7 +360,7 @@ fn csi_set_scroll_region(p: Parser, g: Grid) -> Grid [io]
 // vim / nvim send this on mode change so the cursor shape mirrors the
 // mode (block normal, bar insert, underline replace).  Without the SP
 // intermediate it's a different, less-used CSI we ignore.
-fn csi_set_cursor_style(p: Parser, g: Grid) -> Grid [io]
+fn csi_set_cursor_style(p: Parser, g: Grid) -> Grid [io, ffi]
   let intm = array_i64_get_h(p.slots, slot_intermediate())
   if intm == 32
     // Latch dirty so a re-emitting host (novomux) forwards the new
@@ -371,7 +371,7 @@ fn csi_set_cursor_style(p: Parser, g: Grid) -> Grid [io]
   else
     g
 
-fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io]
+fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io, ffi]
   flush_current_param(p)
   // DEC private-mode dispatch — `\e[?Nh` (DECSET) and `\e[?Nl`
   // (DECRST).  The '?' intermediate (63) was recorded by
@@ -479,7 +479,7 @@ fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io]
 // the cursor and `?1047` did not either before xterm 251, while
 // `?1049` is defined as save + switch + clear.  All three take the
 // save+switch+clear path.
-fn dispatch_private_mode(p: Parser, g: Grid, set: Bool) -> Grid [io]
+fn dispatch_private_mode(p: Parser, g: Grid, set: Bool) -> Grid [io, ffi]
   let n = parser_param(p, 0, 0)
   if n == 47 or n == 1047 or n == 1049
     if set
@@ -542,7 +542,7 @@ fn dispatch_private_mode(p: Parser, g: Grid, set: Bool) -> Grid [io]
   else
     g
 
-fn dispatch_sgr(p: Parser, g: Grid) -> Grid [io]
+fn dispatch_sgr(p: Parser, g: Grid) -> Grid [io, ffi]
   // Walk params; each interpreted independently EXCEPT the
   // 38/48 compound forms which consume trailing params:
   //   38;5;N         — 256-color fg, eats 2 extra params
@@ -586,7 +586,7 @@ fn dispatch_sgr(p: Parser, g: Grid) -> Grid [io]
 // Indexed SGR color (`\e[38;5;Nm` / `\e[48;5;Nm`).  N is clamped into
 // 0..255 rather than rejected, because a malformed index should still
 // paint something.
-fn apply_256_color(g: Grid, is_fg: Bool, n: Int) -> Grid [io]
+fn apply_256_color(g: Grid, is_fg: Bool, n: Int) -> Grid [io, ffi]
   let c = if n < 0
     0
   elif n > 255
@@ -620,13 +620,13 @@ fn apply_truecolor(g: Grid, is_fg: Bool, r: Int, gc: Int, b: Int) -> Grid
 // derived 16-231 cube + 232-255 grayscale ramp defaults for
 // 16-255).
 @ffi("novo_term_palette_lookup")
-fn novo_term_palette_lookup_h(idx: Int) -> Int [io]
+fn novo_term_palette_lookup_h(idx: Int) -> Int [io, ffi]
 
 @ffi("novo_term_default_fg_get")
-fn novo_term_default_fg_get_h() -> Int [io]
+fn novo_term_default_fg_get_h() -> Int [io, ffi]
 
 @ffi("novo_term_default_bg_get")
-fn novo_term_default_bg_get_h() -> Int [io]
+fn novo_term_default_bg_get_h() -> Int [io, ffi]
 
 // One SGR parameter.
 //
@@ -637,7 +637,7 @@ fn novo_term_default_bg_get_h() -> Int [io]
 // ECMA-48 defines these as independent switches, and both the cell
 // format (8 attr bits in word 0) and the renderer (which ORs in the
 // cursor-shape bit) already treat attrs as a bitmask.
-fn apply_sgr_one(g: Grid, v: Int) -> Grid [io]
+fn apply_sgr_one(g: Grid, v: Int) -> Grid [io, ffi]
   if v == 0
     grid.grid_sgr_reset(g)
   elif v == 1
@@ -671,7 +671,7 @@ fn apply_sgr_one(g: Grid, v: Int) -> Grid [io]
 // Feed one byte through the parser.  Returns the updated Grid;
 // the Parser's mutable state lives in its `slots` array so the
 // caller doesn't need to rebind it.
-fn parser_feed_byte(p: Parser, g: Grid, b: Int) -> Grid [io]
+fn parser_feed_byte(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
   let st = parser_state(p)
   if st == st_ground()
     feed_ground(p, g, b)
@@ -729,7 +729,7 @@ fn utf8_lead_payload(b: Int, n_remaining: Int) -> Int
   else                                  // 4-byte lead: 3 low bits
     b - 240
 
-fn feed_ground(p: Parser, g: Grid, b: Int) -> Grid [io]
+fn feed_ground(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
   if b == 27                            // ESC
     set_state(p, st_esc())
     g
@@ -764,7 +764,7 @@ fn feed_ground(p: Parser, g: Grid, b: Int) -> Grid [io]
 // and return to ground.  An invalid continuation aborts the
 // sequence (drop accumulated bytes) and re-feeds the new byte
 // from ground state — typical xterm-style recovery.
-fn feed_utf8_cont(p: Parser, g: Grid, b: Int) -> Grid [io]
+fn feed_utf8_cont(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
   if b < 128 or b >= 192                // not a continuation byte
     // Abort the partial sequence + re-process the byte from
     // ground.  The accumulator's contents are discarded.
@@ -782,7 +782,7 @@ fn feed_utf8_cont(p: Parser, g: Grid, b: Int) -> Grid [io]
       array_i64_set_h(p.slots, slot_utf8_remaining(), remaining)
       g
 
-fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io]
+fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
   if b == 91                            // '['
     reset_csi(p)
     set_state(p, st_csi_param())
@@ -873,7 +873,7 @@ fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io]
     set_state(p, st_ground())
     g
 
-fn feed_csi_param(p: Parser, g: Grid, b: Int) -> Grid [io]
+fn feed_csi_param(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
   if b >= 48 and b <= 57                // digit
     let cur = array_i64_get_h(p.slots, slot_current_param())
     array_i64_set_h(p.slots, slot_current_param(), cur * 10 + (b - 48))
@@ -902,7 +902,7 @@ fn feed_csi_param(p: Parser, g: Grid, b: Int) -> Grid [io]
   else
     g
 
-fn feed_osc_string(p: Parser, g: Grid, b: Int) -> Grid [io]
+fn feed_osc_string(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
   // OSC payload runs until BEL (0x07) or ST (ESC \).  Payload bytes
   // accumulate and are finalised on the terminator, so the caller's
   // pump can dispatch OSC 0/1/2 (window title) to the window system.
@@ -935,7 +935,7 @@ fn feed_osc_string(p: Parser, g: Grid, b: Int) -> Grid [io]
 // don't implement sixel, ReGIS, terminfo-query replies, or
 // the other consumers; the goal is just to NOT let payload
 // bytes leak through to ground state.
-fn feed_dcs_string(p: Parser, g: Grid, b: Int) -> Grid [io]
+fn feed_dcs_string(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
   if b == 7
     set_state(p, st_ground())
     g
