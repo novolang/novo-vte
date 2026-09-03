@@ -7,13 +7,26 @@ renders differently than novomux inside xterm" class of conformance
 bug.
 
 Pure Novo — `std.array` through `@ffi` and nothing else — so it runs
-headless, with no PTY, no window and no GPU.  Its `@test` suite
-(`src/vte_grid_tests.nv`, run by `tests/orbit/test_novo_vte_grid.sh`)
-is the umbrella's coverage for the shared model, alongside novoterm's
-conformance fixtures (`tests/orbit/test_novoterm_conformance.sh`),
-which drive this parser and grid and touch nothing else in that
-package.  novoterm's other suites link `render.nv`'s X11 + wgpu
-surface and stay out of a sweep.
+headless, with no PTY, no window and no GPU.  Feed it bytes, read
+cells back: everything about drawing them belongs to the consumer.
+
+## Using it
+
+It is a library: depend on it and `use` the module you need.
+
+```
+novo pkg add novo-vte
+```
+
+```novo
+use grid
+use parser
+```
+
+```
+novo pkg build                       # build the package
+novo test src/vte_grid_tests.nv      # 9 tests
+```
 
 ## Limits
 
@@ -98,7 +111,11 @@ Bit 3 is not free.  A new rendition takes bit 6 or 7.
 
 ## Tests
 
-`tests/orbit/test_novo_vte_grid.sh` (`sec_novo_vte_grid`) runs
-`src/vte_grid_tests.nv`; `tests/orbit/test_novo_vte_units.sh`
-(`sec_novo_vte_units`) runs the unit suite.  Both are in the umbrella
-sweep.
+```
+novo test src/vte_grid_tests.nv
+```
+
+The suite drives the parser a byte at a time and reads the grid back,
+so a failure names the escape sequence that produced the wrong cell.
+novoterm's conformance fixtures drive the same two modules against
+recorded xterm output and are the wider net.

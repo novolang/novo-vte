@@ -17,8 +17,8 @@ use parser
 // numbers instead of a Str keeps NUL and other non-printables
 // visible in the failure message instead of truncating it.
 fn rowstr(g: grid.Grid, r: Int, cols: Int) -> Str [io, ffi]
-    let mut s = ""
-    for i in 0..cols
+    var s = ""
+    for i in 0 .. cols
         s = s + str.from_int(grid.cell_glyph(grid.grid_get(g, r, i))) + " "
     s
 
@@ -31,9 +31,9 @@ fn rowstr(g: grid.Grid, r: Int, cols: Int) -> Str [io, ffi]
 @test
 fn test_grid_to_string_uses_two_word_stride() [io]
     let g0 = grid.grid_new(2, 3)
-    let p  = parser.parser_new()
-    let a  = parser.parser_feed_byte(p, g0, 65)   // 'A'
-    let b  = parser.parser_feed_byte(p, a,  66)   // 'B'
+    let p = parser.parser_new()
+    let a = parser.parser_feed_byte(p, g0, 65)   // 'A'
+    let b = parser.parser_feed_byte(p, a, 66)   // 'B'
     test.assert_eq(grid.grid_to_string(b), "@ 0,2\nAB \n   \n")
     parser.parser_drop(p)
     grid.grid_drop(b)
@@ -55,7 +55,7 @@ fn test_grid_to_string_uses_two_word_stride() [io]
 @test
 fn test_real_zsh_line_edit_matches_xterm() [io]
     let p = parser.parser_new()
-    let mut g = grid.grid_new(24, 80)
+    var g = grid.grid_new(24, 80)
     g = parser.parser_feed_byte(p, g, 27)
     g = parser.parser_feed_byte(p, g, 91)
     g = parser.parser_feed_byte(p, g, 49)
@@ -626,9 +626,12 @@ fn test_real_zsh_line_edit_matches_xterm() [io]
     g = parser.parser_feed_byte(p, g, 109)
     g = parser.parser_feed_byte(p, g, 32)
     g = parser.parser_feed_byte(p, g, 8)
-    test.assert_eq(rowstr(g, 0, 80), "32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 ")
-    test.assert_eq(rowstr(g, 1, 80), "126 47 112 114 111 106 101 99 116 115 47 110 111 118 111 32 111 110 32 57504 32 109 97 105 110 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 ")
-    test.assert_eq(rowstr(g, 2, 80), "10140 32 117 105 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 ")
+    test.assert_eq(rowstr(g, 0, 80),
+        "32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 ")
+    test.assert_eq(rowstr(g, 1, 80),
+        "126 47 112 114 111 106 101 99 116 115 47 110 111 118 111 32 111 110 32 57504 32 109 97 105 110 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 ")
+    test.assert_eq(rowstr(g, 2, 80),
+        "10140 32 117 105 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 ")
     test.assert_eq(grid.grid_cursor_row(g), 2)
     test.assert_eq(grid.grid_cursor_col(g), 4)
     parser.parser_drop(p)
@@ -637,8 +640,8 @@ fn test_real_zsh_line_edit_matches_xterm() [io]
 // Feed each byte of `s` through the parser and return the final Grid.
 fn feed_str(p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi]
     let n = str.len(s)
-    let mut acc = g
-    for i in 0..n
+    var acc = g
+    for i in 0 .. n
         acc = parser.parser_feed_byte(p, acc, str.byte_at(s, i) ?? 0)
     acc
 
@@ -658,7 +661,7 @@ fn esc() -> Str [io, ffi]
 // in one sequence is the case nothing fed.
 @test
 fn test_sgr_two_attributes_in_one_sequence_both_stick() [io]
-    let p  = parser.parser_new()
+    let p = parser.parser_new()
     let g0 = grid.grid_new(2, 4)
     let g1 = feed_str(p, g0, esc() + "[1;4mA" + esc() + "[0m")
     let both = bits.bor(grid.attr_bold(), grid.attr_underline())
@@ -668,7 +671,7 @@ fn test_sgr_two_attributes_in_one_sequence_both_stick() [io]
 
 @test
 fn test_sgr_attribute_order_does_not_matter() [io]
-    let p  = parser.parser_new()
+    let p = parser.parser_new()
     let g0 = grid.grid_new(2, 4)
     let g1 = feed_str(p, g0, esc() + "[4;1mA" + esc() + "[0m")
     let both = bits.bor(grid.attr_bold(), grid.attr_underline())
@@ -681,7 +684,7 @@ fn test_sgr_attribute_order_does_not_matter() [io]
 // reverse, which the sequence never named.
 @test
 fn test_sgr_24_clears_only_underline() [io]
-    let p  = parser.parser_new()
+    let p = parser.parser_new()
     let g0 = grid.grid_new(2, 4)
     let g1 = feed_str(p, g0, esc() + "[1m" + esc() + "[7mA" + esc() + "[24mB")
     let bold_rev = bits.bor(grid.attr_bold(), grid.attr_reverse())
@@ -692,7 +695,7 @@ fn test_sgr_24_clears_only_underline() [io]
 
 @test
 fn test_sgr_22_and_27_clear_only_their_own_bit() [io]
-    let p  = parser.parser_new()
+    let p = parser.parser_new()
     let g0 = grid.grid_new(2, 6)
     let g1 = feed_str(p, g0, esc() + "[1;4;7mA" + esc() + "[22mB" + esc() + "[27mC")
     let all3 = bits.bor(bits.bor(grid.attr_bold(), grid.attr_underline()),
@@ -712,7 +715,7 @@ fn test_sgr_22_and_27_clear_only_their_own_bit() [io]
 // take bits 4 and 5 rather than the next free low bit.
 @test
 fn test_sgr_italic_and_strike_have_their_own_bits() [io]
-    let p  = parser.parser_new()
+    let p = parser.parser_new()
     let g0 = grid.grid_new(2, 6)
     let g1 = feed_str(p, g0, esc() + "[3;9mA" + esc() + "[23mB" + esc() + "[29mC")
     test.assert_eq(grid.attr_italic(), 16)
@@ -727,7 +730,7 @@ fn test_sgr_italic_and_strike_have_their_own_bits() [io]
 // SGR 0 is the one that DOES clear the whole mask.
 @test
 fn test_sgr_0_clears_every_attribute() [io]
-    let p  = parser.parser_new()
+    let p = parser.parser_new()
     let g0 = grid.grid_new(2, 4)
     let g1 = feed_str(p, g0, esc() + "[1;3;4;7;9mA" + esc() + "[0mB")
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)), 0)
