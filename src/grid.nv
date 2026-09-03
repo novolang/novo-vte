@@ -49,12 +49,25 @@ fn array_i64_drop_h(h: Int) [io, ffi]
 
 // ── Constants ───────────────────────────────────────────────────
 
+// Character-attribute bits, one per ECMA-48 graphic rendition.  They
+// are INDEPENDENT switches (§8.3.117): a cell can be bold and
+// underlined at once, and SGR 24 clears underline without touching
+// bold.  Set them with grid_add_attr / clear them with
+// grid_clear_attr, never by assigning the mask.
+//
+// Bit 3 (value 8) is NOT free: novoterm's renderer ORs it into the
+// cursor cell as the bar-cursor shape, so italic and strikethrough
+// take bits 4 and 5.
 fn attr_bold() -> Int
   1
 fn attr_underline() -> Int
   2
 fn attr_reverse() -> Int
   4
+fn attr_italic() -> Int
+  16
+fn attr_strike() -> Int
+  32
 
 fn default_fg() -> Int
   7
@@ -127,16 +140,20 @@ fn blank_word1() -> Int
 fn blank_cell() -> Int
   blank_word0()
 
-// Index-taking shim: (glyph, fg_idx, bg_idx, attrs) in, word 0 of the
-// 2-word cell out, with fg_idx resolved to RGB through the session
-// palette.
+// Index-taking shim for WORD 0: (glyph, fg_idx, attrs) in, word 0 of
+// the 2-word cell out, with fg_idx resolved to RGB through the
+// session palette.  Named for the word it builds, and takes only the
+// fields that word holds.
 //
-// Two things a caller must know.  `bg_idx` is accepted and IGNORED —
-// background lives in word 1, which a word-0 packer cannot reach — so
-// a grid_set of this value leaves whatever background the cell
-// already had.  And nothing in this package or its consumers calls
-// it today; it is here as part of the exported surface.
-fn pack_cell(glyph: Int, fg_idx: Int, bg_idx: Int, attrs: Int) -> Int [io, ffi]
+// It used to be `pack_cell(glyph, fg_idx, bg_idx, attrs)`, which read
+// as "build a cell from these four properties" and silently dropped
+// the background: a cell is two i64s since truecolor, background
+// lives alone in word 1, and a function returning ONE Int has nowhere
+// to put it.  The first caller to write `pack_word0_idx(65, 1, 4, 0)`
+// for red-on-blue would have got red on whatever was already there,
+// type-checked and with no diagnostic.  A background needs
+// pack_word1 and a second grid write.
+fn pack_word0_idx(glyph: Int, fg_idx: Int, attrs: Int) -> Int [io, ffi]
   let fg_rgb = novo_term_palette_lookup_h(fg_idx)
   pack_word0(glyph, attrs, fg_rgb)
 
@@ -561,8 +578,22 @@ fn grid_set_bg(g: Grid, bg_rgb: Int) -> Grid
   g.bg = bits.band(bg_rgb, 16777215)
   g
 
+// Replace the WHOLE attribute mask.  Only two callers want this: a
+// reset, and a test pinning an exact mask.  An SGR that names one
+// rendition must use grid_add_attr / grid_clear_attr instead — using
+// this one is what made `CSI 1;4m` render underline without bold.
 fn grid_set_attrs(g: Grid, attrs: Int) -> Grid
   g.attrs = bits.band(attrs, 255)
+  g
+
+// Turn one attribute bit ON, leaving the rest of the mask alone.
+fn grid_add_attr(g: Grid, bit: Int) -> Grid
+  g.attrs = bits.band(bits.bor(g.attrs, bit), 255)
+  g
+
+// Turn one attribute bit OFF, leaving the rest of the mask alone.
+fn grid_clear_attr(g: Grid, bit: Int) -> Grid
+  g.attrs = bits.band(g.attrs, bits.band(bits.bnot(bit), 255))
   g
 
 // SGR 0 (reset) reads the RUNTIME defaults rather than the

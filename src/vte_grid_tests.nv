@@ -633,3 +633,123 @@ fn test_real_zsh_line_edit_matches_xterm() [io]
     test.assert_eq(grid.grid_cursor_col(g), 4)
     parser.parser_drop(p)
     grid.grid_drop(g)
+
+// Feed each byte of `s` through the parser and return the final Grid.
+fn feed_str(p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi]
+    let n = str.len(s)
+    let mut acc = g
+    for i in 0..n
+        acc = parser.parser_feed_byte(p, acc, str.byte_at(s, i) ?? 0)
+    acc
+
+fn esc() -> Str [io, ffi]
+    str.from_char(27)
+
+// ECMA-48 §8.3.117 makes each graphic rendition an INDEPENDENT
+// switch, so `CSI 1;4m` is bold AND underlined and the order of the
+// two parameters cannot matter.  grid_set_attrs ASSIGNED the mask, so
+// every SGR destroyed the one before it and only the last survived —
+// `CSI 1;4m` rendered underline alone, `CSI 4;1m` bold alone.
+//
+// The novoterm test that looked like coverage for this
+// (test_csi_sgr_multi_param_in_one_sequence) feeds `CSI 1;33m` — one
+// attribute plus one COLOUR.  Colour lands in g.fg, never in g.attrs,
+// so its assertion held whatever grid_set_attrs did.  Two ATTRIBUTES
+// in one sequence is the case nothing fed.
+@test
+fn test_sgr_two_attributes_in_one_sequence_both_stick() [io]
+    let p  = parser.parser_new()
+    let g0 = grid.grid_new(2, 4)
+    let g1 = feed_str(p, g0, esc() + "[1;4mA" + esc() + "[0m")
+    let both = bits.bor(grid.attr_bold(), grid.attr_underline())
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), both)
+    parser.parser_drop(p)
+    grid.grid_drop(g1)
+
+@test
+fn test_sgr_attribute_order_does_not_matter() [io]
+    let p  = parser.parser_new()
+    let g0 = grid.grid_new(2, 4)
+    let g1 = feed_str(p, g0, esc() + "[4;1mA" + esc() + "[0m")
+    let both = bits.bor(grid.attr_bold(), grid.attr_underline())
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), both)
+    parser.parser_drop(p)
+    grid.grid_drop(g1)
+
+// The clear side is the worse half: SGR 24 is NOT UNDERLINED and must
+// touch nothing else.  Clearing the whole mask took out bold and
+// reverse, which the sequence never named.
+@test
+fn test_sgr_24_clears_only_underline() [io]
+    let p  = parser.parser_new()
+    let g0 = grid.grid_new(2, 4)
+    let g1 = feed_str(p, g0, esc() + "[1m" + esc() + "[7mA" + esc() + "[24mB")
+    let bold_rev = bits.bor(grid.attr_bold(), grid.attr_reverse())
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), bold_rev)
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)), bold_rev)
+    parser.parser_drop(p)
+    grid.grid_drop(g1)
+
+@test
+fn test_sgr_22_and_27_clear_only_their_own_bit() [io]
+    let p  = parser.parser_new()
+    let g0 = grid.grid_new(2, 6)
+    let g1 = feed_str(p, g0, esc() + "[1;4;7mA" + esc() + "[22mB" + esc() + "[27mC")
+    let all3 = bits.bor(bits.bor(grid.attr_bold(), grid.attr_underline()),
+                        grid.attr_reverse())
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), all3)
+    // 22 drops bold, leaves underline + reverse.
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)),
+                   bits.bor(grid.attr_underline(), grid.attr_reverse()))
+    // 27 drops reverse, leaves underline.
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 2)), grid.attr_underline())
+    parser.parser_drop(p)
+    grid.grid_drop(g1)
+
+// SGR 3 (italic) and 9 (crossed-out) had no bit to live in and fell
+// through apply_sgr_one's final `else g`, so both were discarded.
+// Bit 3 of the byte is novoterm's bar-cursor shape, which is why they
+// take bits 4 and 5 rather than the next free low bit.
+@test
+fn test_sgr_italic_and_strike_have_their_own_bits() [io]
+    let p  = parser.parser_new()
+    let g0 = grid.grid_new(2, 6)
+    let g1 = feed_str(p, g0, esc() + "[3;9mA" + esc() + "[23mB" + esc() + "[29mC")
+    test.assert_eq(grid.attr_italic(), 16)
+    test.assert_eq(grid.attr_strike(), 32)
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)),
+                   bits.bor(grid.attr_italic(), grid.attr_strike()))
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)), grid.attr_strike())
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 2)), 0)
+    parser.parser_drop(p)
+    grid.grid_drop(g1)
+
+// SGR 0 is the one that DOES clear the whole mask.
+@test
+fn test_sgr_0_clears_every_attribute() [io]
+    let p  = parser.parser_new()
+    let g0 = grid.grid_new(2, 4)
+    let g1 = feed_str(p, g0, esc() + "[1;3;4;7;9mA" + esc() + "[0mB")
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)), 0)
+    parser.parser_drop(p)
+    grid.grid_drop(g1)
+
+// A cell is TWO words, and the index-taking packer builds word 0
+// only.  It used to be spelled `pack_cell(glyph, fg_idx, bg_idx,
+// attrs)` — a four-property constructor whose single-Int return had
+// nowhere to put the background, so the bg_idx type-checked and was
+// discarded.  This pins the split that makes the name honest:
+// fg / glyph / attrs come out of word 0, background out of word 1,
+// and writing one is not writing the other.
+@test
+fn test_word0_packer_carries_no_background() [io]
+    let g0 = grid.grid_new(1, 2)
+    // Index 1 is ANSI red in the session palette's default seed.
+    let w0 = grid.pack_word0_idx(65, 1, grid.attr_bold())
+    let g1 = grid.grid_set(g0, 0, 0, w0)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 65)
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), grid.attr_bold())
+    // The background of that cell is whatever word 1 already held —
+    // the blank default, not anything the word-0 write named.
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g1, 0, 0)), grid.cell_bg(grid.blank_word1()))
+    grid.grid_drop(g1)

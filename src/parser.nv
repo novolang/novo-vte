@@ -630,24 +630,35 @@ fn novo_term_default_bg_get_h() -> Int [io, ffi]
 
 // One SGR parameter.
 //
-// Note the attribute model this implements: SGR 1 / 4 / 7 each REPLACE
-// the whole attribute mask rather than setting their own bit, and
-// 22 / 24 / 27 clear the whole mask rather than their own bit.  So
-// `CSI 1;4m` ends with underline alone, and `CSI 24m` also drops bold.
-// ECMA-48 defines these as independent switches, and both the cell
-// format (8 attr bits in word 0) and the renderer (which ORs in the
-// cursor-shape bit) already treat attrs as a bitmask.
+// The attribute model is ECMA-48 §8.3.117: each graphic rendition is
+// an INDEPENDENT switch, so a set touches one bit and a reset clears
+// the one bit it names.  `CSI 1;4m` ends bold AND underlined; `CSI
+// 24m` after `CSI 1;7m` drops underline and leaves bold and reverse
+// standing.  Only SGR 0 clears the whole mask, and it goes through
+// grid_sgr_reset because it restores the runtime default colours too.
 fn apply_sgr_one(g: Grid, v: Int) -> Grid [io, ffi]
   if v == 0
     grid.grid_sgr_reset(g)
   elif v == 1
-    grid.grid_set_attrs(g, grid.attr_bold())
+    grid.grid_add_attr(g, grid.attr_bold())
+  elif v == 3
+    grid.grid_add_attr(g, grid.attr_italic())
   elif v == 4
-    grid.grid_set_attrs(g, grid.attr_underline())
+    grid.grid_add_attr(g, grid.attr_underline())
   elif v == 7
-    grid.grid_set_attrs(g, grid.attr_reverse())
-  elif v == 22 or v == 24 or v == 27
-    grid.grid_set_attrs(g, 0)
+    grid.grid_add_attr(g, grid.attr_reverse())
+  elif v == 9
+    grid.grid_add_attr(g, grid.attr_strike())
+  elif v == 22
+    grid.grid_clear_attr(g, grid.attr_bold())
+  elif v == 23
+    grid.grid_clear_attr(g, grid.attr_italic())
+  elif v == 24
+    grid.grid_clear_attr(g, grid.attr_underline())
+  elif v == 27
+    grid.grid_clear_attr(g, grid.attr_reverse())
+  elif v == 29
+    grid.grid_clear_attr(g, grid.attr_strike())
   elif v >= 30 and v <= 37
     grid.grid_set_fg(g, novo_term_palette_lookup_h(v - 30))
   elif v >= 90 and v <= 97
