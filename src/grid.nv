@@ -69,10 +69,6 @@ fn attr_italic() -> Int
 fn attr_strike() -> Int
   32
 
-fn default_fg() -> Int
-  7
-fn default_bg() -> Int
-  0
 fn blank_glyph() -> Int
   32   // ASCII space
 

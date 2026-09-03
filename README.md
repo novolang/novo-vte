@@ -7,11 +7,23 @@ renders differently than novomux inside xterm" class of conformance
 bug.
 
 Pure Novo — `std.array` through `@ffi` and nothing else — so it runs
-headless, with no PTY, no window and no GPU.  That is why its `@test`
-suite (`src/vte_grid_tests.nv`, run by
-`tests/orbit/test_novo_vte_grid.sh`) is the umbrella's coverage for
-the shared model: novoterm's own tests link `render.nv`'s X11 + wgpu
-surface and cannot run in a sweep.
+headless, with no PTY, no window and no GPU.  Its `@test` suite
+(`src/vte_grid_tests.nv`, run by `tests/orbit/test_novo_vte_grid.sh`)
+is the umbrella's coverage for the shared model, alongside novoterm's
+conformance fixtures (`tests/orbit/test_novoterm_conformance.sh`),
+which drive this parser and grid and touch nothing else in that
+package.  novoterm's other suites link `render.nv`'s X11 + wgpu
+surface and stay out of a sweep.
+
+## Limits
+
+| Limit | Value | What it bounds |
+|---|---|---|
+| OSC payload | 8192 bytes | one `\e]…` payload after the `N;` prefix.  Sized for OSC 52, whose base64 body carries 3/4 its length in text — a ~6 KB selection.  Bytes past the cap are dropped silently; the accumulator has no way to report. |
+| Reply channel | 64 bytes | the parser's answers to device queries (DA, DA2, DSR, CPR), drained by the caller's pump after each byte |
+
+Both are fixed-size `i64` arrays inside `Parser`, so the OSC cap costs
+64 KB per parser — one per pane in a mux.
 
 Two modules:
 

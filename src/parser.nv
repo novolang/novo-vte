@@ -138,17 +138,26 @@ struct Parser
   //   slot 0: pending flag (0 = no, 1 = ready for caller dispatch)
   //   slot 1: parsed OSC code (the N in `OSC N ; <payload> ST`)
   //   slot 2: payload byte count
-  //   slot 3..511: payload bytes (after the `N;` prefix)
-  // Cap at 512 bytes — generous for window titles; longer OSC
-  // payloads (some apps set images/icons via OSC 4/10/11) get
-  // truncated rather than overflowing.
+  //   slot 3..osc_cap()+2: payload bytes (after the `N;` prefix)
   osc: Int
 
 fn response_cap() -> Int
   64
 
+// Payload bytes one OSC may carry.  Sized for OSC 52, the clipboard
+// set: its payload is base64, so N bytes here carry 3N/4 bytes of
+// text, and 8192 is a ~6 KB selection — a screenful of a copy-mode
+// yank rather than the 384 bytes a 512-byte accumulator allowed.
+// Window titles, the other user of this buffer, never come close.
+//
+// The cost is one i64 per byte per Parser, so this buffer is 64 KB
+// and a Parser is a little over that.  novomux allocates one per
+// pane; ten panes is 640 KB, which is the trade this size is.  Bytes
+// past the cap are dropped, silently — the append below has no way to
+// report, and an OSC that overflows is the application's to keep
+// under the terminal's advertised limit.
 fn osc_cap() -> Int
-  512
+  8192
 
 fn parser_new() -> Parser [io, ffi]
   let h    = array_i64_alloc_h(slots_total())
