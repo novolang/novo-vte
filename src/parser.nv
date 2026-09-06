@@ -55,6 +55,29 @@
 // MAX_PARAMS = 16, so slots 6..21 are params and slots_total() is 24.
 // Per-byte cost is O(1) array reads/writes — no struct cloning on the
 // hot path, which is what makes a byte-at-a-time feed viable.
+//
+// A parser in use.  It owns no output of its own: a byte goes in, a
+// `Grid` comes back changed, and the caller decides what to draw.  The
+// escape sequence below is `ESC [ 2 ; 1 H` — CUP, "put the cursor on
+// row 2, column 1" — fed one byte at a time, exactly as it would arrive
+// off a pty.
+//
+// ```novo
+// use grid
+// use parser
+//
+// fn main() [io, ffi]
+//     var g = grid.grid_new(2, 3)
+//     let p = parser.parser_new()
+//     for b in [65, 27, 91, 50, 59, 49, 72, 66]   // A ESC [ 2 ; 1 H B
+//         g = parser.parser_feed_byte(p, g, b)
+//     print(grid.grid_to_string(g))
+//     // @ 1,1      the cursor moved, and 'B' landed where it pointed
+//     // A          row 0
+//     // B          row 1
+//     parser.parser_drop(p)
+//     grid.grid_drop(g)
+// ```
 
 // Re-declare the std.array @ffi externs locally — sibling modules
 // in pkg builds don't see the auto-prepended stdlib decls (same

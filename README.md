@@ -23,10 +23,41 @@ use grid
 use parser
 ```
 
+A grid is a rectangle of cells with a cursor and the current colours
+riding on it; the parser turns a byte at a time into changes to one.
+Both are `@ffi`-backed, so a caller declares `[io, ffi]` and drops what
+it made:
+
+```novo
+use grid
+use parser
+
+fn main() [io, ffi]
+    var g = grid.grid_new(2, 3)
+    let p = parser.parser_new()
+    for b in [65, 27, 91, 50, 59, 49, 72, 66]   // A ESC [ 2 ; 1 H B
+        g = parser.parser_feed_byte(p, g, b)
+    print(grid.grid_to_string(g))               // @ 1,1 / A / B
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+```
+
 ```
 novo pkg build                       # build the package
 novo test src/vte_grid_tests.nv      # 9 tests
 ```
+
+## The reference
+
+[The package's page](https://novo-lang.org/packages/novo-vte) is
+generated from these sources at every publish, and today it carries the
+two modules' own documentation and no entries — because **nothing in
+this package is marked `pub` yet**. The functions above are reachable
+and every consumer already calls them, with a
+`NOVO_PACKAGE_PRIVACY` warning on each call; naming the public surface
+is a decision about what novo-vte promises across roughly two hundred
+functions, most of them genuinely internal, and it has not been taken.
+Until it is, read the module headers and the examples in them.
 
 ## Limits
 

@@ -4,6 +4,28 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.2.1
+
+Documentation: the reference is generated from the code, and the
+examples in it are doctests.  No code changed — every cell, every
+escape sequence and every FFI symbol is what 0.2.0 shipped.
+
+- **Both modules carry a worked example, and both run.**  A grid built,
+  written into and dumped; a parser fed `ESC [ 2 ; 1 H` one byte at a
+  time, moving the cursor a `B` then lands under.  A fenced `novo`
+  block in a documentation comment is compiled by `novo doc` and run by
+  `novo test src/grid.nv` and `novo test src/parser.nv`, so an example
+  that stopped being true is a failing test rather than a reader's
+  afternoon.
+- **The README says where the reference stands.**
+  [The package's page](https://novo-lang.org/packages/novo-vte) carries
+  the two modules' documentation and no entries, because nothing here
+  is marked `pub` yet — every consumer already calls these functions
+  and is warned on each call.  Naming the public surface is a decision
+  about what this package promises across roughly two hundred
+  functions, and it has not been taken; the README no longer leaves a
+  reader to discover that from a build log.
+
 ## 0.2.0
 
 **Built and tested against the 0.7.1 toolchain, and it is the floor.**

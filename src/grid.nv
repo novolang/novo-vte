@@ -34,6 +34,26 @@
 // maps them back to the same C symbols and the linker resolves
 // them once.  Harmless duplication; no impact on the produced
 // binary.
+//
+// A grid in use.  Every mutator RETURNS the grid, so a caller written
+// in the threading style reads correctly; the array is `@ffi`-backed,
+// which is why the example declares `[ffi]` beside `[io]` and why the
+// grid has to be dropped.  `grid_to_string` is the readable dump —
+// cursor position first, then one line per row.
+//
+// ```novo
+// use grid
+//
+// fn main() [io, ffi]
+//     var g = grid.grid_new(2, 3)
+//     g = grid.grid_put_char(g, 65)     // 'A'
+//     g = grid.grid_put_char(g, 66)     // 'B'
+//     print(grid.grid_to_string(g))
+//     // @ 0,2      the cursor, row then column
+//     // AB         row 0; the third column is still blank
+//     //            row 1, empty
+//     grid.grid_drop(g)
+// ```
 
 @ffi("novo_array_i64_alloc")
 fn array_i64_alloc_h(capacity: Int) -> Int [io, ffi]
