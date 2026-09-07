@@ -44,20 +44,58 @@ fn main() [io, ffi]
 
 ```
 novo pkg build                       # build the package
-novo test src/vte_grid_tests.nv      # 9 tests
+novo test src/vte_grid_tests.nv      # 30 tests
 ```
 
 ## The reference
 
-[The package's page](https://novo-lang.org/packages/novo-vte) is
-generated from these sources at every publish, and today it carries the
-two modules' own documentation and no entries — because **nothing in
-this package is marked `pub` yet**. The functions above are reachable
-and every consumer already calls them, with a
-`NOVO_PACKAGE_PRIVACY` warning on each call; naming the public surface
-is a decision about what novo-vte promises across roughly two hundred
-functions, most of them genuinely internal, and it has not been taken.
-Until it is, read the module headers and the examples in them.
+Every public function, its signature, its effect row and a worked
+example of each entry point are on
+[the package's page](https://novo-lang.org/packages/novo-vte),
+generated from these sources at every publish. A list of names here
+would be a second original, and the second original is the one that
+goes stale.
+
+## What is public
+
+Ninety-four items across the two modules, and they are what this
+package promises. The groups below are what the reference page is
+organised by; the page itself carries the signatures.
+
+| Group | Module | What it is for |
+|---|---|---|
+| `Grid`, `grid_new`, `grid_drop`, `grid_resize`, `grid_rows`, `grid_cols` | `grid` | make a screen, resize it, release it |
+| `grid_get`, `grid_get_w1`, `grid_set`, `grid_set_w1`, `grid_set_pair` | `grid` | the two words of a cell, read and written |
+| `cell_glyph`, `cell_attrs`, `cell_fg`, `cell_bg`, `pack_word0_idx`, `pack_word1`, `default_fg_rgb`, `default_bg_rgb` | `grid` | unpack a word into its fields, and pack one back |
+| `attr_bold`, `attr_underline`, `attr_reverse`, `attr_italic`, `attr_strike` | `grid` | the five rendition bits, one per ECMA-48 switch |
+| `grid_cursor_row`, `grid_cursor_col`, `grid_cursor_set`, and the `grid_*cursor_visible` / `grid_*cursor_shape*` accessors | `grid` | where the cursor is, whether it is drawn, and what shape |
+| `grid_set_fg`, `grid_set_bg`, `grid_set_attrs`, `grid_add_attr`, `grid_clear_attr`, `grid_sgr_reset` | `grid` | the SGR state later writes inherit |
+| `grid_put_char`, `grid_backspace`, `grid_tab`, `grid_carriage_return`, `grid_line_feed` | `grid` | write a glyph, and the four control characters |
+| `grid_erase_line`, `grid_erase_display`, `grid_erase_chars`, `grid_insert_lines`, `grid_delete_lines`, `grid_insert_chars`, `grid_delete_chars` | `grid` | the ECMA-48 editing functions, in full pairs |
+| `grid_set_scroll_region`, `grid_scroll_up`, `grid_decsc`, `grid_decrc`, `grid_enter_alt_screen`, `grid_exit_alt_screen`, `grid_using_alt` | `grid` | scroll regions, the saved cursor, the alt screen |
+| `grid_bracketed_paste`, `grid_mouse_mode`, `grid_mouse_sgr_code` | `grid` | the mode flags a renderer reads each frame, and the one function that decides whether a mouse event is forwarded |
+| `grid_view_get`, `grid_view_get_w1`, `grid_view_offset`, `grid_scroll_view`, `grid_reset_view`, and the `scrollback_*` accessors | `grid` | reading the screen through the scrollback view, so scrolling costs the renderer nothing |
+| `grid_to_string` | `grid` | the readable dump, cursor first, one line per row |
+| `Parser`, `parser_new`, `parser_drop`, `parser_feed_byte`, `parser_state`, `st_ground` … `st_dcs_string` | `parser` | make a parser, feed it a byte, ask what state it is in |
+| `parser_osc_pending`, `parser_osc_code`, `parser_osc_payload_len`, `parser_osc_payload_byte`, `parser_osc_clear` | `parser` | an OSC is handed to the caller to act on — this module never sets a window title itself |
+| `parser_response_count`, `parser_response_byte_at`, `parser_response_clear` | `parser` | the replies the terminal owes the host, drained by the caller's pump |
+
+**What stays private, so you know you are not missing it:**
+
+- The `@ffi` re-declarations of `std.array` and of the palette lookup —
+  they map to C symbols, and a consumer that wants one declares it too.
+- The cell packers below `pack_word0_idx` / `pack_word1`
+  (`pack_word0`, `blank_word0`, `blank_word1`, `blank_cell`) and the
+  index arithmetic around them.
+- The parser's state-machine slot accessors (`slot_*`, `max_params`,
+  `response_cap`, `osc_cap`) and its `feed_*` / `dispatch_*` arms —
+  they are reached by feeding a byte, not by calling them.
+- The scrollback ring's own construction (`scrollback_new`,
+  `scrollback_push_row`, `scrollback_cap`, `scrollback_head`) — the
+  ring is built by `grid_new` and read through the view.
+- The mode setters the parser drives from the stream (autowrap, wrap
+  pending, mouse-mode bits, per-row wrap flags): the escape sequence is
+  the way in, and the accessor above is the way out.
 
 ## Limits
 
@@ -143,10 +181,15 @@ Bit 3 is not free.  A new rendition takes bit 6 or 7.
 ## Tests
 
 ```
-novo test src/vte_grid_tests.nv
+novo test src/vte_grid_tests.nv      # 30 tests
+novo test src/grid.nv                # the documented examples in grid
+novo test src/parser.nv              # the documented examples in parser
 ```
 
 The suite drives the parser a byte at a time and reads the grid back,
 so a failure names the escape sequence that produced the wrong cell.
-novoterm's conformance fixtures drive the same two modules against
-recorded xterm output and are the wider net.
+Every public function is named by one of these tests, and the examples
+in the documentation are tests too — an example that stopped being true
+is a red run rather than a reader's afternoon. novoterm's conformance
+fixtures drive the same two modules against recorded xterm output and
+are the wider net.

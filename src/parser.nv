@@ -99,23 +99,33 @@ use grid
 
 // ── Constants ───────────────────────────────────────────────────
 
-fn st_ground() -> Int
+// The state a parser rests in: the next byte is text, a C0 control or
+// the ESC that starts a sequence.  `parser_state` returns one of these
+// six codes.
+pub fn st_ground() -> Int
     0
-fn st_esc() -> Int
+// ESC has arrived; the next byte selects the sequence — `[` for CSI,
+// `]` for OSC, or a single-byte function such as `7` (DECSC).
+pub fn st_esc() -> Int
     1
-fn st_csi_param() -> Int
+// Inside a CSI sequence, collecting its numeric parameters until the
+// final byte arrives and dispatches it.
+pub fn st_csi_param() -> Int
     2
-fn st_osc_string() -> Int
+// Inside an OSC string, accumulating its payload until BEL or ST.  The
+// payload is handed to the caller through the `parser_osc_*` accessors
+// rather than acted on here.
+pub fn st_osc_string() -> Int
     3
 // "In the middle of a multi-byte UTF-8 codepoint, waiting for
 // continuation bytes."
-fn st_utf8_cont() -> Int
+pub fn st_utf8_cont() -> Int
     4
 // Consuming a Device Control String payload until ST (ESC \) or BEL.
 // Apps use DCS for terminfo capability queries (`\eP+q…\e\`, xterm's
 // XTGETTCAP); dropping the payload here keeps its bytes from leaking
 // into ground state and being re-parsed as text and stray CSIs.
-fn st_dcs_string() -> Int
+pub fn st_dcs_string() -> Int
     5
 
 fn max_params() -> Int
@@ -148,7 +158,16 @@ fn slot_params_base() -> Int
 
 // ── Parser handle ───────────────────────────────────────────────
 
-struct Parser
+// One escape-sequence parser: the state machine, the queue of replies it
+// owes the host, and the OSC payload it has accumulated.  It carries no
+// screen of its own — `parser_feed_byte` takes the `Grid` to change —
+// so one Parser belongs to one stream of bytes, and a multiplexer keeps
+// one per pane.
+//
+// The three fields are raw array handles, which is why a Parser is made
+// with `parser_new` and released with `parser_drop` rather than built as
+// a literal.
+pub struct Parser
     slots: Int
     // Side-array for response bytes queued in answer to host
     // probes (DA, CPR, DSR).  Slot 0
@@ -182,7 +201,10 @@ fn response_cap() -> Int
 fn osc_cap() -> Int
     8192
 
-fn parser_new() -> Parser [io, ffi]
+// Allocate a parser in the ground state, with an empty reply queue and
+// no OSC pending.  Release it with `parser_drop`; each one costs a
+// little over 64 KB, most of it the OSC accumulator.
+pub fn parser_new() -> Parser [io, ffi]
     let h = array_i64_alloc_h(slots_total())
     let resp = array_i64_alloc_h(response_cap() + 1)
     array_i64_set_h(resp, 0, 0)
@@ -192,26 +214,67 @@ fn parser_new() -> Parser [io, ffi]
     array_i64_set_h(osc, 2, 0)   // payload len
     Parser { slots: h, response: resp, osc: osc }
 
-fn parser_drop(p: Parser) [io, ffi]
+// Release the parser's three backing arrays.  The Grid it was feeding is
+// separate and is dropped on its own.
+pub fn parser_drop(p: Parser) [io, ffi]
     array_i64_drop_h(p.slots)
     array_i64_drop_h(p.response)
     array_i64_drop_h(p.osc)
 
 // ── OSC dispatch accessors ─────────────────────────────────────
 
-fn parser_osc_pending(p: Parser) -> Bool [io, ffi]
+// True when a complete OSC string is waiting to be dispatched.  This
+// module never acts on an OSC — a window title, a clipboard write and a
+// palette change are all the caller's to make — so the loop is: after
+// each byte, ask; if pending, read the code and the payload, act, then
+// `parser_osc_clear`.
+//
+// ```novo
+// use grid
+// use parser
+//
+// fn main() [io, ffi]
+//     var g = grid.grid_new(1, 4)
+//     let p = parser.parser_new()
+//     // OSC 0 ; h i BEL — "set the window title to hi"
+//     for b in [27, 93, 48, 59, 104, 105, 7]
+//         g = parser.parser_feed_byte(p, g, b)
+//     if parser.parser_osc_pending(p)
+//         var title = ""
+//         var i = 0
+//         while i < parser.parser_osc_payload_len(p)
+//             title = title + str.from_char(parser.parser_osc_payload_byte(p, i))
+//             i = i + 1
+//         println("${parser.parser_osc_code(p)} ${title}")   // 0 hi
+//         parser.parser_osc_clear(p)
+//     parser.parser_drop(p)
+//     grid.grid_drop(g)
+// ```
+pub fn parser_osc_pending(p: Parser) -> Bool [io, ffi]
     array_i64_get_h(p.osc, 0) == 1
 
-fn parser_osc_code(p: Parser) -> Int [io, ffi]
+// The N in `OSC N ; payload`: 0 or 2 for a window title, 4 for a palette
+// entry, 52 for the clipboard, 10 / 11 for the default fg / bg.  0 when
+// the string carried no leading digits.
+pub fn parser_osc_code(p: Parser) -> Int [io, ffi]
     array_i64_get_h(p.osc, 1)
 
-fn parser_osc_payload_len(p: Parser) -> Int [io, ffi]
+// How many payload bytes the pending OSC carries, after its `N;` prefix
+// has been stripped.  Capped at 8192; bytes past the cap were dropped
+// while the string was accumulating, and nothing here reports that.
+pub fn parser_osc_payload_len(p: Parser) -> Int [io, ffi]
     array_i64_get_h(p.osc, 2)
 
-fn parser_osc_payload_byte(p: Parser, i: Int) -> Int [io, ffi]
+// Payload byte `i`, for `i` in [0, `parser_osc_payload_len`).  A byte at
+// a time rather than a `Str`, because an OSC 52 payload is base64 and an
+// OSC 4 payload is a colour spec — neither is text to print.
+pub fn parser_osc_payload_byte(p: Parser, i: Int) -> Int [io, ffi]
     array_i64_get_h(p.osc, 3 + i)
 
-fn parser_osc_clear(p: Parser) [io, ffi]
+// Mark the pending OSC handled.  Call it after acting, or after deciding
+// not to: an OSC left pending is not re-reported, but the accessors keep
+// answering about it until the next one arrives.
+pub fn parser_osc_clear(p: Parser) [io, ffi]
     array_i64_set_h(p.osc, 0, 0)
     array_i64_set_h(p.osc, 1, 0)
     array_i64_set_h(p.osc, 2, 0)
@@ -269,13 +332,42 @@ fn osc_accum_finalise(p: Parser) [io, ffi]
 
 // ── Response queue accessors ───────────────────────────────────
 
-fn parser_response_count(p: Parser) -> Int [io, ffi]
+// How many reply bytes the parser owes the host.  Device queries — DA,
+// DA2, DSR, CPR — are answered by the terminal, so a pump that never
+// drains this queue leaves an application waiting for an answer that
+// never comes.
+//
+// ```novo
+// use grid
+// use parser
+//
+// fn main() [io, ffi]
+//     var g = grid.grid_new(2, 8)
+//     let p = parser.parser_new()
+//     g = grid.grid_cursor_set(g, 1, 3)
+//     for b in [27, 91, 54, 110]              // ESC [ 6 n  — CPR
+//         g = parser.parser_feed_byte(p, g, b)
+//     var reply = ""
+//     var i = 0
+//     while i < parser.parser_response_count(p)
+//         reply = reply + str.from_char(parser.parser_response_byte_at(p, i))
+//         i = i + 1
+//     parser.parser_response_clear(p)
+//     println("${str.len(reply)}")            // 6:  ESC [ 2 ; 4 R
+//     parser.parser_drop(p)
+//     grid.grid_drop(g)
+// ```
+pub fn parser_response_count(p: Parser) -> Int [io, ffi]
     array_i64_get_h(p.response, 0)
 
-fn parser_response_byte_at(p: Parser, i: Int) -> Int [io, ffi]
+// Reply byte `i`, for `i` in [0, `parser_response_count`).  Write these
+// back to the pty master in order.
+pub fn parser_response_byte_at(p: Parser, i: Int) -> Int [io, ffi]
     array_i64_get_h(p.response, 1 + i)
 
-fn parser_response_clear(p: Parser) [io, ffi]
+// Empty the reply queue, after writing it out.  The queue holds 64
+// bytes; a drain per pump tick keeps it far under that.
+pub fn parser_response_clear(p: Parser) [io, ffi]
     array_i64_set_h(p.response, 0, 0)
 
 fn response_append_byte(p: Parser, b: Int) [io, ffi]
@@ -293,7 +385,10 @@ fn response_append_str(p: Parser, s: Str) [io, ffi]
 
 // Convenience getters used by tests + the grid renderer.
 
-fn parser_state(p: Parser) -> Int [io, ffi]
+// Which state the machine is in, as one of the `st_*` codes.  A caller
+// that has fed a burst and wants to know whether a sequence is still
+// open compares against `st_ground`.
+pub fn parser_state(p: Parser) -> Int [io, ffi]
     array_i64_get_h(p.slots, slot_state())
 
 fn parser_param_count(p: Parser) -> Int [io, ffi]
@@ -714,7 +809,7 @@ fn apply_sgr_one(g: Grid, v: Int) -> Grid [io, ffi]
 // Feed one byte through the parser.  Returns the updated Grid;
 // the Parser's mutable state lives in its `slots` array so the
 // caller doesn't need to rebind it.
-fn parser_feed_byte(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
+pub fn parser_feed_byte(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
     let st = parser_state(p)
     if st == st_ground()
         feed_ground(p, g, b)

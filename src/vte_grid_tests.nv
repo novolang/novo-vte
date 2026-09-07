@@ -756,3 +756,475 @@ fn test_word0_packer_carries_no_background() [io]
     // the blank default, not anything the word-0 write named.
     test.assert_eq(grid.cell_bg(grid.grid_get_w1(g1, 0, 0)), grid.cell_bg(grid.blank_word1()))
     grid.grid_drop(g1)
+
+// ── The published surface ──────────────────────────────────────
+//
+// Every item novo-vte marks `pub` is a promise to novoterm, to
+// novomux and to anyone who adds the package from the registry, so
+// each one is exercised below.  The tests are grouped the way the
+// README groups the surface: geometry and cells, SGR state, the
+// control characters, the ECMA-48 editing functions, the modes, the
+// scrollback view, and the parser's two output channels.
+
+// Geometry and the cell readers.  A fresh grid is blank: every cell
+// holds a space in the default colours, and the cursor is home.
+@test
+fn test_new_grid_is_blank_in_the_default_colours() [io]
+    let g = grid.grid_new(2, 4)
+    test.assert_eq(grid.grid_rows(g), 2)
+    test.assert_eq(grid.grid_cols(g), 4)
+    test.assert_eq(grid.grid_cursor_row(g), 0)
+    test.assert_eq(grid.grid_cursor_col(g), 0)
+    let w0 = grid.grid_get(g, 0, 0)
+    let w1 = grid.grid_get_w1(g, 0, 0)
+    test.assert_eq(grid.cell_glyph(w0), 32)
+    test.assert_eq(grid.cell_attrs(w0), 0)
+    test.assert_eq(grid.cell_fg(w0), grid.default_fg_rgb())
+    test.assert_eq(grid.cell_bg(w1), grid.default_bg_rgb())
+    grid.grid_drop(g)
+
+// A cell is two words, and the writers come in the same three
+// spellings the README names: word 0 alone, word 1 alone, or both.
+// `pack_word1` is the only way to build word 1, because word 1 holds
+// nothing but the background.
+@test
+fn test_cell_writers_cover_both_words() [io]
+    let g0 = grid.grid_new(1, 3)
+    // Word 0 alone: glyph + attrs + fg, background untouched.
+    let g1 = grid.grid_set(g0, 0, 0, grid.pack_word0_idx(66, 2, grid.attr_underline()))
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 66)
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), grid.attr_underline())
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g1, 0, 0)), grid.default_bg_rgb())
+    // Word 1 alone: the background changes and nothing else does.
+    let g2 = grid.grid_set_w1(g1, 0, 0, grid.pack_word1(0x0000ff))
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g2, 0, 0)), 0x0000ff)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g2, 0, 0)), 66)
+    // Both at once.
+    let g3 = grid.grid_set_pair(g2, 0, 1, grid.pack_word0(67, 0, 0xff0000),
+                                grid.pack_word1(0x00ff00))
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g3, 0, 1)), 67)
+    test.assert_eq(grid.cell_fg(grid.grid_get(g3, 0, 1)), 0xff0000)
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g3, 0, 1)), 0x00ff00)
+    grid.grid_drop(g3)
+
+// `pack_word1` keeps 24 bits and drops the rest, so a caller that
+// hands it a full word cannot smear the background into the reserved
+// bits above it.
+@test
+fn test_pack_word1_keeps_24_bits() [io]
+    test.assert_eq(grid.pack_word1(0xffffff), 0xffffff)
+    test.assert_eq(grid.pack_word1(0x7f000000), 0)
+
+// The SGR state rides on the grid and applies to cells written after
+// it.  `grid_add_attr` / `grid_clear_attr` move one bit; `grid_set_fg`
+// / `grid_set_bg` take RGB, never a palette index; `grid_sgr_reset`
+// puts all three back.
+@test
+fn test_sgr_state_applies_to_later_writes_only() [io]
+    let g0 = grid.grid_new(1, 4)
+    let g1 = grid.grid_put_char(g0, 65)   // 'A' — plain
+    let g2 = grid.grid_set_fg(g1, 0xff0000)
+    let g3 = grid.grid_set_bg(g2, 0x0000ff)
+    let g4 = grid.grid_add_attr(g3, grid.attr_bold())
+    let g5 = grid.grid_add_attr(g4, grid.attr_italic())
+    let g6 = grid.grid_put_char(g5, 66)   // 'B' — bold italic
+    let g7 = grid.grid_clear_attr(g6, grid.attr_bold())
+    let g8 = grid.grid_put_char(g7, 67)   // 'C' — italic only
+    let g9 = grid.grid_sgr_reset(g8)
+    let gA = grid.grid_put_char(g9, 68)   // 'D' — back to plain
+    // 'A' was written before any of it.
+    test.assert_eq(grid.cell_fg(grid.grid_get(gA, 0, 0)), grid.default_fg_rgb())
+    test.assert_eq(grid.cell_attrs(grid.grid_get(gA, 0, 0)), 0)
+    test.assert_eq(grid.cell_fg(grid.grid_get(gA, 0, 1)), 0xff0000)
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(gA, 0, 1)), 0x0000ff)
+    test.assert_eq(grid.cell_attrs(grid.grid_get(gA, 0, 1)),
+                   bits.bor(grid.attr_bold(), grid.attr_italic()))
+    // Clearing bold left italic standing.
+    test.assert_eq(grid.cell_attrs(grid.grid_get(gA, 0, 2)), grid.attr_italic())
+    // Reset returned every field to the session default.
+    test.assert_eq(grid.cell_attrs(grid.grid_get(gA, 0, 3)), 0)
+    test.assert_eq(grid.cell_fg(grid.grid_get(gA, 0, 3)), grid.default_fg_rgb())
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(gA, 0, 3)), grid.default_bg_rgb())
+    grid.grid_drop(gA)
+
+// The five attribute bits are the values the README's table names, and
+// each one is an independent switch.
+@test
+fn test_attribute_bits_are_the_documented_values() [io]
+    test.assert_eq(grid.attr_bold(), 1)
+    test.assert_eq(grid.attr_underline(), 2)
+    test.assert_eq(grid.attr_reverse(), 4)
+    test.assert_eq(grid.attr_italic(), 16)
+    test.assert_eq(grid.attr_strike(), 32)
+    // Bit 3 (value 8) is the renderer's bar-cursor shape and belongs to
+    // no rendition, which is why italic starts at 16.
+    let all = bits.bor(bits.bor(bits.bor(bits.bor(
+        grid.attr_bold(), grid.attr_underline()),
+        grid.attr_reverse()),
+        grid.attr_italic()),
+        grid.attr_strike())
+    test.assert_eq(bits.band(all, 8), 0)
+
+// The four control characters a pty stream is full of.
+@test
+fn test_control_characters_move_the_cursor() [io]
+    let g0 = grid.grid_new(3, 20)
+    // HT to the next 8-column stop, twice; then clipped at the margin.
+    let g1 = grid.grid_cursor_set(g0, 0, 3)
+    let g2 = grid.grid_tab(g1)
+    test.assert_eq(grid.grid_cursor_col(g2), 8)
+    let g3 = grid.grid_tab(g2)
+    test.assert_eq(grid.grid_cursor_col(g3), 16)
+    // BS backs up one column and stops at 0.
+    let g4 = grid.grid_backspace(g3)
+    test.assert_eq(grid.grid_cursor_col(g4), 15)
+    let g5 = grid.grid_backspace(grid.grid_cursor_set(g4, 0, 0))
+    test.assert_eq(grid.grid_cursor_col(g5), 0)
+    // LF moves down and keeps the column; CR moves to column 0 and
+    // keeps the row.  A newline is the two of them together.
+    let g6 = grid.grid_cursor_set(g5, 0, 5)
+    let g7 = grid.grid_line_feed(g6)
+    test.assert_eq(grid.grid_cursor_row(g7), 1)
+    test.assert_eq(grid.grid_cursor_col(g7), 5)
+    let g8 = grid.grid_carriage_return(g7)
+    test.assert_eq(grid.grid_cursor_row(g8), 1)
+    test.assert_eq(grid.grid_cursor_col(g8), 0)
+    grid.grid_drop(g8)
+
+// EL and ED — erase without moving anything.
+@test
+fn test_erase_line_and_display() [io]
+    let g0 = grid.grid_new(2, 4)
+    let g1 = grid.grid_put_char(grid.grid_put_char(
+        grid.grid_put_char(g0, 65), 66),
+        67)   // "ABC" on row 0
+    let g2 = grid.grid_cursor_set(g1, 1, 0)
+    let g3 = grid.grid_put_char(g2, 68)   // 'D' on row 1
+    // EL 0 from column 1 of row 0 leaves 'A' and blanks the rest.
+    let g4 = grid.grid_erase_line(grid.grid_cursor_set(g3, 0, 1), 0)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g4, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g4, 0, 1)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g4, 0, 2)), 32)
+    // Row 1 is a different line and EL never touched it.
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g4, 1, 0)), 68)
+    // ED 2 blanks the whole screen.
+    let g5 = grid.grid_erase_display(g4, 2)
+    var blanks = 0
+    for r in 0 .. 2
+        for c in 0 .. 4
+            if grid.cell_glyph(grid.grid_get(g5, r, c)) == 32
+                blanks = blanks + 1
+    test.assert_eq(blanks, 8)
+    grid.grid_drop(g5)
+
+// ECH, ICH and DCH all work inside one row; IL and DL move whole rows.
+// The four of them are the editing family a full-screen application
+// redraws with, so each is pinned against the row it must not touch.
+// A Grid mutates in place, so each of the three gets its own.
+fn abcd_row() -> grid.Grid [io, ffi]
+    var g = grid.grid_new(2, 5)
+    for cp in [65, 66, 67, 68]   // "ABCD"
+        g = grid.grid_put_char(g, cp)
+    g
+
+@test
+fn test_character_editing_stays_inside_the_row() [io]
+    // ECH 2 at column 1 blanks B and C in place; D does not move.
+    let e = grid.grid_erase_chars(grid.grid_cursor_set(abcd_row(), 0, 1), 2)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(e, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(e, 0, 1)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(e, 0, 2)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(e, 0, 3)), 68)
+    test.assert_eq(grid.grid_cursor_col(e), 1)
+    grid.grid_drop(e)
+    // DCH 2 at column 1 deletes B and C and pulls D left.
+    let d = grid.grid_delete_chars(grid.grid_cursor_set(abcd_row(), 0, 1), 2)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(d, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(d, 0, 1)), 68)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(d, 0, 2)), 32)
+    grid.grid_drop(d)
+    // ICH 1 at column 1 opens a blank and pushes B, C, D right.
+    let i = grid.grid_insert_chars(grid.grid_cursor_set(abcd_row(), 0, 1), 1)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(i, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(i, 0, 1)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(i, 0, 2)), 66)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(i, 0, 3)), 67)
+    grid.grid_drop(i)
+
+@test
+fn test_line_editing_moves_whole_rows() [io]
+    let g0 = grid.grid_new(4, 3)
+    let a = grid.grid_put_char(grid.grid_cursor_set(g0, 0, 0), 65)
+    let b = grid.grid_put_char(grid.grid_cursor_set(a, 1, 0), 66)
+    // IL 1 at row 0 pushes A and B down a row.
+    let ins = grid.grid_insert_lines(grid.grid_cursor_set(b, 0, 0), 1)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(ins, 0, 0)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(ins, 1, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(ins, 2, 0)), 66)
+    // DL 1 at row 0 pulls them back up — the inverse.
+    let del = grid.grid_delete_lines(grid.grid_cursor_set(ins, 0, 0), 1)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(del, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(del, 1, 0)), 66)
+    grid.grid_drop(del)
+
+// DECSTBM confines a scroll to its region: rows outside it never move.
+@test
+fn test_scroll_region_confines_grid_scroll_up() [io]
+    let g0 = grid.grid_new(5, 3)
+    var g = g0
+    for r in 0 .. 5
+        g = grid.grid_put_char(grid.grid_cursor_set(g, r, 0), 65 + r)
+    let region = grid.grid_set_scroll_region(g, 1, 3)
+    let s = grid.grid_scroll_up(region)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(s, 0, 0)), 65)   // 'A' held
+    test.assert_eq(grid.cell_glyph(grid.grid_get(s, 1, 0)), 67)   // 'C' up
+    test.assert_eq(grid.cell_glyph(grid.grid_get(s, 2, 0)), 68)   // 'D' up
+    test.assert_eq(grid.cell_glyph(grid.grid_get(s, 3, 0)), 32)   // blanked
+    test.assert_eq(grid.cell_glyph(grid.grid_get(s, 4, 0)), 69)   // 'E' held
+    grid.grid_drop(s)
+
+// DECSC / DECRC save and restore the cursor and the SGR state
+// together, which is what makes a full-screen redraw reversible.
+@test
+fn test_decsc_and_decrc_round_trip_cursor_and_colour() [io]
+    let g0 = grid.grid_new(3, 4)
+    let g1 = grid.grid_set_fg(grid.grid_cursor_set(g0, 1, 2), 0x00ffff)
+    let g2 = grid.grid_decsc(g1)
+    let g3 = grid.grid_set_fg(grid.grid_cursor_set(g2, 0, 0), 0xff0000)
+    test.assert_eq(grid.grid_cursor_row(g3), 0)
+    let g4 = grid.grid_decrc(g3)
+    test.assert_eq(grid.grid_cursor_row(g4), 1)
+    test.assert_eq(grid.grid_cursor_col(g4), 2)
+    let g5 = grid.grid_put_char(g4, 88)
+    test.assert_eq(grid.cell_fg(grid.grid_get(g5, 1, 2)), 0x00ffff)
+    grid.grid_drop(g5)
+
+// The alt screen is a second buffer: what an application writes there
+// never reaches the primary, and `grid_using_alt` says which is live.
+@test
+fn test_alt_screen_is_a_second_buffer() [io]
+    let g0 = grid.grid_new(2, 4)
+    let g1 = grid.grid_put_char(grid.grid_put_char(g0, 65), 66)
+    test.assert_eq(grid.grid_using_alt(g1), 0)
+    let g2 = grid.grid_enter_alt_screen(g1)
+    test.assert_eq(grid.grid_using_alt(g2), 1)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g2, 0, 0)), 32)
+    let g3 = grid.grid_put_char(g2, 90)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g3, 0, 0)), 90)
+    let g4 = grid.grid_exit_alt_screen(g3)
+    test.assert_eq(grid.grid_using_alt(g4), 0)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g4, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g4, 0, 1)), 66)
+    test.assert_eq(grid.grid_cursor_col(g4), 2)
+    grid.grid_drop(g4)
+
+// The mode flags a renderer reads each frame, with the defaults a
+// fresh grid carries.  Every one of them is a DEC private mode the
+// parser sets from the stream; the accessors are how a consumer sees
+// the result.
+@test
+fn test_mode_flags_start_at_the_xterm_defaults() [io]
+    let g0 = grid.grid_new(2, 4)
+    test.assert_eq(grid.grid_cursor_visible(g0), 1)
+    test.assert_eq(grid.grid_cursor_shape(g0), 2)   // steady block
+    test.assert_eq(grid.grid_cursor_shape_dirty(g0), 0)
+    test.assert_eq(grid.grid_bracketed_paste(g0), 0)
+    test.assert_eq(grid.grid_mouse_mode(g0), 0)
+    // Hiding the cursor is what an application does around a repaint.
+    let g1 = grid.grid_set_cursor_visible(g0, false)
+    test.assert_eq(grid.grid_cursor_visible(g1), 0)
+    let g2 = grid.grid_set_cursor_visible(g1, true)
+    test.assert_eq(grid.grid_cursor_visible(g2), 1)
+    grid.grid_drop(g2)
+
+// The shape and its dirty latch are two separate writes, because a
+// renderer has to forward a shape an application merely RE-asserts (vim
+// sends block 2 on every return to normal mode) and a value diff would
+// miss that.  So the setter changes the shape and nothing else; the
+// latch says "forward it", and the renderer clears the latch once it has.
+@test
+fn test_cursor_shape_and_its_dirty_latch_are_separate() [io]
+    let g0 = grid.grid_new(2, 4)
+    let g1 = grid.grid_set_cursor_shape(g0, 5)   // blinking bar
+    test.assert_eq(grid.grid_cursor_shape(g1), 5)
+    test.assert_eq(grid.grid_cursor_shape_dirty(g1), 0)
+    // Out-of-range shapes fall back to the xterm default, steady block.
+    test.assert_eq(grid.grid_cursor_shape(grid.grid_set_cursor_shape(g1, 9)), 2)
+    // Marking, then forwarding, then clearing — the renderer's cycle.
+    let g2 = grid.grid_mark_cursor_shape_dirty(grid.grid_set_cursor_shape(g1, 5))
+    test.assert_eq(grid.grid_cursor_shape_dirty(g2), 1)
+    let g3 = grid.grid_clear_cursor_shape_dirty(g2)
+    test.assert_eq(grid.grid_cursor_shape_dirty(g3), 0)
+    test.assert_eq(grid.grid_cursor_shape(g3), 5)   // the shape stands
+    grid.grid_drop(g3)
+
+// Mouse forwarding is decided by one pure function, so a consumer can
+// answer "do I forward this event, and as what byte" without a PTY.
+@test
+fn test_mouse_forwarding_decision() [io]
+    // No tracking, or Shift held: never forwarded — local selection wins.
+    test.assert_eq(grid.grid_mouse_sgr_code(0, 0, false, 0), 0 - 1)
+    test.assert_eq(grid.grid_mouse_sgr_code(10, 1, false, 0), 0 - 1)
+    // 1002 reports drags only, so idle hover with no button is not one.
+    test.assert_eq(grid.grid_mouse_sgr_code(10, 0, true, 0), 0 - 1)
+    // 1003 reports any motion: no button held is SGR button 3, +32 motion.
+    test.assert_eq(grid.grid_mouse_sgr_code(12, 0, true, 0), 35)
+    // A real drag carries the HELD button: left → 0 + 32, right → 2 + 32.
+    test.assert_eq(grid.grid_mouse_sgr_code(10, 8, true, 0), 32)
+    test.assert_eq(grid.grid_mouse_sgr_code(12, 32, true, 0), 34)
+    // A press is forwarded under 1000, a motion is not.
+    test.assert_eq(grid.grid_mouse_sgr_code(9, 0, false, 0), 0)
+    test.assert_eq(grid.grid_mouse_sgr_code(9, 8, true, 0), 0 - 1)
+
+// A resize builds a new grid at the new geometry and carries the
+// content across; the returned grid is the one to keep.
+@test
+fn test_resize_carries_content_and_geometry() [io]
+    let g0 = grid.grid_new(2, 3)
+    let g1 = grid.grid_put_char(grid.grid_put_char(g0, 65), 66)
+    let g2 = grid.grid_resize(g1, 4, 5)
+    test.assert_eq(grid.grid_rows(g2), 4)
+    test.assert_eq(grid.grid_cols(g2), 5)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g2, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g2, 0, 1)), 66)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g2, 3, 4)), 32)
+    grid.grid_drop(g2)
+
+// A row that scrolls off the top enters the scrollback ring, and the
+// view functions are how a consumer reads it back: `grid_view_get` at
+// offset 0 is the live grid, and at offset K the top K rows come from
+// history.  The renderer reads through this pair and scrolling then
+// costs it nothing.
+@test
+fn test_scrollback_ring_and_the_view() [io]
+    let g0 = grid.grid_new(2, 3)
+    let g1 = grid.grid_set_bg(g0, 0x123456)
+    let g2 = grid.grid_put_char(g1, 65)   // 'A' on row 0
+    let g3 = grid.grid_scroll_up(g2)   // row 0 → history
+    test.assert_eq(grid.scrollback_count(g3.scrollback), 1)
+    test.assert_eq(grid.scrollback_cols(g3.scrollback), 3)
+    test.assert_eq(grid.scrollback_view_offset(g3.scrollback), 0)
+    // The stored row keeps both of its words.
+    test.assert_eq(grid.cell_glyph(grid.scrollback_get_cell(g3.scrollback, 0, 0)), 65)
+    test.assert_eq(grid.cell_bg(grid.scrollback_get_cell_w1(g3.scrollback, 0, 0)),
+                   0x123456)
+    // At offset 0 the view is the live grid, which is now blank.
+    test.assert_eq(grid.grid_view_offset(g3), 0)
+    test.assert_eq(grid.cell_glyph(grid.grid_view_get(g3, 0, 0)), 32)
+    // Scroll one line back: visible row 0 becomes the history row.
+    let g4 = grid.grid_scroll_view(g3, 1)
+    test.assert_eq(grid.grid_view_offset(g4), 1)
+    test.assert_eq(grid.cell_glyph(grid.grid_view_get(g4, 0, 0)), 65)
+    test.assert_eq(grid.cell_bg(grid.grid_view_get_w1(g4, 0, 0)), 0x123456)
+    test.assert_eq(grid.cell_glyph(grid.grid_view_get(g4, 1, 0)), 32)
+    // Scrolling past the end of history clamps rather than running off.
+    let g5 = grid.grid_scroll_view(g4, 99)
+    test.assert_eq(grid.grid_view_offset(g5), 1)
+    // Back to live, two ways: the explicit reset, and the raw setter.
+    let g6 = grid.grid_reset_view(g5)
+    test.assert_eq(grid.grid_view_offset(g6), 0)
+    grid.scrollback_set_view_offset(g6.scrollback, 1)
+    test.assert_eq(grid.grid_view_offset(g6), 1)
+    grid.scrollback_set_view_offset(g6.scrollback, 0)
+    // Clearing history empties the ring; the live grid is untouched.
+    grid.scrollback_clear(g6.scrollback)
+    test.assert_eq(grid.scrollback_count(g6.scrollback), 0)
+    test.assert_eq(grid.grid_rows(g6), 2)
+    grid.grid_drop(g6)
+
+// Output snaps the view back to live — xterm's rule, and the reason a
+// consumer never has to reset the view itself on new bytes.
+@test
+fn test_output_snaps_the_view_back_to_live() [io]
+    let g0 = grid.grid_new(2, 3)
+    let g1 = grid.grid_scroll_up(grid.grid_put_char(g0, 65))
+    let g2 = grid.grid_scroll_view(g1, 1)
+    test.assert_eq(grid.grid_view_offset(g2), 1)
+    let g3 = grid.grid_put_char(g2, 90)
+    test.assert_eq(grid.grid_view_offset(g3), 0)
+    grid.grid_drop(g3)
+
+// ── The parser's surface ───────────────────────────────────────
+
+// `parser_state` answers with one of the six `st_*` codes, so a caller
+// that has fed a burst can tell a finished sequence from a half-read
+// one.  The codes are distinct and a fresh parser is in ground.
+@test
+fn test_parser_state_reports_the_documented_codes() [io]
+    test.assert_eq(parser.st_ground(), 0)
+    test.assert_eq(parser.st_esc(), 1)
+    test.assert_eq(parser.st_csi_param(), 2)
+    test.assert_eq(parser.st_osc_string(), 3)
+    test.assert_eq(parser.st_utf8_cont(), 4)
+    test.assert_eq(parser.st_dcs_string(), 5)
+    let p = parser.parser_new()
+    let g0 = grid.grid_new(2, 8)
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    // Half of `ESC [ 1 m`: ESC alone, then the CSI opener.
+    let g1 = parser.parser_feed_byte(p, g0, 27)
+    test.assert_eq(parser.parser_state(p), parser.st_esc())
+    let g2 = parser.parser_feed_byte(p, g1, 91)
+    test.assert_eq(parser.parser_state(p), parser.st_csi_param())
+    // The final byte dispatches and the machine falls back to ground.
+    let g3 = parser.parser_feed_byte(p, g2, 109)
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    // An OSC opener parks the machine in the string state.
+    let g4 = parser.parser_feed_byte(p, g3, 27)
+    let g5 = parser.parser_feed_byte(p, g4, 93)
+    test.assert_eq(parser.parser_state(p), parser.st_osc_string())
+    let g6 = parser.parser_feed_byte(p, g5, 7)   // BEL closes it
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    parser.parser_osc_clear(p)
+    parser.parser_drop(p)
+    grid.grid_drop(g6)
+
+// An OSC is handed to the caller rather than acted on: the parser
+// parses the `N ;` prefix, holds the payload, and waits.  Nothing here
+// sets a window title — that is the consumer's decision to make.
+@test
+fn test_osc_is_parsed_and_handed_to_the_caller() [io]
+    let p = parser.parser_new()
+    let g0 = grid.grid_new(2, 8)
+    test.assert_eq(parser.parser_osc_pending(p), false)
+    // OSC 0 ; h i BEL — "set the window title to hi".
+    let g1 = feed_str(p, g0, esc() + "]0;hi" + str.from_char(7))
+    test.assert_eq(parser.parser_osc_pending(p), true)
+    test.assert_eq(parser.parser_osc_code(p), 0)
+    test.assert_eq(parser.parser_osc_payload_len(p), 2)
+    test.assert_eq(parser.parser_osc_payload_byte(p, 0), 104)   // 'h'
+    test.assert_eq(parser.parser_osc_payload_byte(p, 1), 105)   // 'i'
+    // Clearing marks it handled; the next OSC is reported on its own.
+    parser.parser_osc_clear(p)
+    test.assert_eq(parser.parser_osc_pending(p), false)
+    let g2 = feed_str(p, g1, esc() + "]4;1;rgb:ff/00/00" + str.from_char(7))
+    test.assert_eq(parser.parser_osc_pending(p), true)
+    test.assert_eq(parser.parser_osc_code(p), 4)
+    parser.parser_osc_clear(p)
+    parser.parser_drop(p)
+    grid.grid_drop(g2)
+
+// Device queries are answered by the terminal, so the parser queues
+// reply bytes and the caller's pump drains them back to the pty.  A
+// pump that never drains leaves an application waiting forever.
+@test
+fn test_device_queries_queue_a_reply_the_caller_drains() [io]
+    let p = parser.parser_new()
+    let g0 = grid.grid_new(4, 8)
+    test.assert_eq(parser.parser_response_count(p), 0)
+    // CPR: `ESC [ 6 n` answers with the 1-indexed cursor position.
+    let g1 = grid.grid_cursor_set(g0, 1, 3)
+    let g2 = feed_str(p, g1, esc() + "[6n")
+    var reply = ""
+    for i in 0 .. parser.parser_response_count(p)
+        reply = reply + str.from_char(parser.parser_response_byte_at(p, i))
+    test.assert_eq(reply, esc() + "[2;4R")
+    // Draining is the caller's job; nothing clears the queue on its own.
+    test.assert_eq(parser.parser_response_count(p), 6)
+    parser.parser_response_clear(p)
+    test.assert_eq(parser.parser_response_count(p), 0)
+    // A second query queues again, so a pump per tick keeps up.
+    let g3 = feed_str(p, g2, esc() + "[5n")
+    test.assert_eq(parser.parser_response_count(p), 4)   // ESC [ 0 n
+    parser.parser_response_clear(p)
+    parser.parser_drop(p)
+    grid.grid_drop(g3)

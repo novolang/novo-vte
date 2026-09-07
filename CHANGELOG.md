@@ -4,6 +4,34 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.2.2
+
+The public surface is named. Adding this package no longer produces a
+wall of privacy warnings, and its page on the registry has entries.
+Nothing that worked stops working — this is a compatible addition, so a
+patch bump.
+
+- **Ninety-four items are `pub`**, and they are what novoterm and
+  novomux call plus what this README already promised: the `Grid` and
+  `Parser` types, the cell readers and packers, the SGR state, the
+  control characters, the ECMA-48 editing functions in full pairs, the
+  mode accessors, the scrollback view, and the parser's two output
+  channels. Before this, a consumer got one
+  `NOVO_PACKAGE_PRIVACY` warning per call — 589 building novoterm, 152
+  building novomux. Both are now zero.
+- **Everything else stays private on purpose**, and the README says
+  which classes and why: the `@ffi` re-declarations, the cell packers
+  below `pack_word0_idx`, the state-machine slot accessors, the
+  scrollback ring's construction, and the mode setters the parser
+  drives from the stream.
+- **Every public item carries its documentation**, and five of them
+  carry a compiled example — the parser's feed-and-drain loops for OSC
+  and for device replies, and the grid's read-back.
+- **Every public function is named by a test.** The suite went from 9
+  assertions to 30, covering the geometry, the cells, the SGR state,
+  the editing family, the modes, the scrollback view and both parser
+  channels.
+
 ## 0.2.1
 
 Documentation: the reference is generated from the code, and the
