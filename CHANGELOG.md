@@ -4,6 +4,13 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.2.3
+
+- Relicensed from MIT to Apache-2.0, so every first-party package carries
+  one licence and the patent grant that comes with it.  The copyright
+  holder is unchanged and no third-party code is involved; releases
+  already published as 0.2.2 and earlier remain under MIT.
+
 ## 0.2.2
 
 The public surface is named. Adding this package no longer produces a

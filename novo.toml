@@ -1,8 +1,8 @@
 [package]
 name        = "novo-vte"
-version     = "0.2.2"
+version     = "0.2.3"
 description = "Shared xterm / VT escape-sequence parser + grid model — extracted from orbit/novoterm so orbit/novomux can consume the exact same parser implementation.  Eliminates the 'novomux running inside novoterm renders differently than novomux running inside xterm' class of conformance bug."
-license     = "MIT"
+license     = "Apache-2.0"
 stability   = "beta"
 category    = "terminal"
 tags        = ["vt100", "parser", "escape-sequences"]
