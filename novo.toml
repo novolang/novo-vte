@@ -5,6 +5,7 @@ description = "Shared xterm / VT escape-sequence parser + grid model — extract
 license     = "Apache-2.0"
 stability   = "beta"
 category    = "terminal"
+layer       = "host"
 tags        = ["vt100", "parser", "escape-sequences"]
 repository  = "https://github.com/novolang/novo"
 maintainers = ["novo-lang"]
