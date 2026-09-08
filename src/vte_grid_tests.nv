@@ -698,7 +698,7 @@ fn test_sgr_22_and_27_clear_only_their_own_bit() [io]
     let p = parser.parser_new()
     let g0 = grid.grid_new(2, 6)
     let g1 = feed_str(p, g0, esc() + "[1;4;7mA" + esc() + "[22mB" + esc() + "[27mC")
-    let all3 = (grid.attr_bold() | grid.attr_underline()) | grid.attr_reverse()
+    let all3 = grid.attr_bold() | grid.attr_underline() | grid.attr_reverse()
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), all3)
     // 22 drops bold, leaves underline + reverse.
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)),
@@ -857,7 +857,7 @@ fn test_attribute_bits_are_the_documented_values() [io]
     test.assert_eq(grid.attr_strike(), 32)
     // Bit 3 (value 8) is the renderer's bar-cursor shape and belongs to
     // no rendition, which is why italic starts at 16.
-    let all = (((grid.attr_bold() | grid.attr_underline()) | grid.attr_reverse()) | grid.attr_italic()) | grid.attr_strike()
+    let all = grid.attr_bold() | grid.attr_underline() | grid.attr_reverse() | grid.attr_italic() | grid.attr_strike()
     test.assert_eq(all & 8, 0)
 
 // The four control characters a pty stream is full of.

@@ -127,7 +127,7 @@ fn blank_glyph() -> Int
 // without ever touching word 1.
 
 fn pack_word0(glyph: Int, attrs: Int, fg_rgb: Int) -> Int
-    ((glyph & 65535) | int.shl(attrs & 255, 16)) | int.shl(fg_rgb & 16777215, 24)
+    (glyph & 65535) | int.shl(attrs & 255, 16) | int.shl(fg_rgb & 16777215, 24)
 
 // Build word 1 of a cell from a 24-bit background RGB.  Word 1 holds
 // nothing else, so this is the whole of it; pair it with
@@ -674,7 +674,7 @@ pub fn grid_add_attr(g: Grid, bit: Int) -> Grid
 
 // Turn one attribute bit OFF, leaving the rest of the mask alone.
 pub fn grid_clear_attr(g: Grid, bit: Int) -> Grid
-    g.attrs = g.attrs & ((~bit) & 255)
+    g.attrs = g.attrs & (~bit & 255)
     g
 
 // SGR 0 (reset) reads the RUNTIME defaults rather than the
