@@ -733,10 +733,7 @@ fn apply_256_color(g: Grid, is_fg: Bool, n: Int) -> Grid [io, ffi]
 // cell, with no quantisation to the 6×6×6 cube.  Packed as
 // r<<16 | g<<8 | b, each channel masked to 8 bits.
 fn apply_truecolor(g: Grid, is_fg: Bool, r: Int, gc: Int, b: Int) -> Grid
-    let rgb = bits.bor(
-              bits.bor(int.shl(bits.band(r, 255), 16),
-                          int.shl(bits.band(gc, 255), 8)),
-              bits.band(b, 255))
+    let rgb = (int.shl(r & 255, 16) | int.shl(gc & 255, 8)) | (b & 255)
     if is_fg
         grid.grid_set_fg(g, rgb)
     else

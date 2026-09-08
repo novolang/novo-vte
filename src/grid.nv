@@ -127,17 +127,14 @@ fn blank_glyph() -> Int
 // without ever touching word 1.
 
 fn pack_word0(glyph: Int, attrs: Int, fg_rgb: Int) -> Int
-    bits.bor(bits.bor(
-    bits.band(glyph, 65535),
-    int.shl(bits.band(attrs, 255), 16)),
-    int.shl(bits.band(fg_rgb, 16777215), 24))
+    ((glyph & 65535) | int.shl(attrs & 255, 16)) | int.shl(fg_rgb & 16777215, 24)
 
 // Build word 1 of a cell from a 24-bit background RGB.  Word 1 holds
 // nothing else, so this is the whole of it; pair it with
 // `pack_word0_idx` (or `pack_word0`'s RGB form) and one `grid_set_pair`
 // to write a cell in both colours.
 pub fn pack_word1(bg_rgb: Int) -> Int
-    bits.band(bg_rgb, 16777215)
+    bg_rgb & 16777215
 
 // The codepoint stored in word 0 of a cell — bits 0..15.
 //
@@ -160,23 +157,23 @@ pub fn pack_word1(bg_rgb: Int) -> Int
 //     grid.grid_drop(g)
 // ```
 pub fn cell_glyph(w0: Int) -> Int
-    bits.band(w0, 65535)
+    w0 & 65535
 // The 8-bit attribute mask stored in word 0 of a cell — bits 16..23.
 // Test one rendition with `bits.band(cell_attrs(w0), attr_bold())`; the
 // bits are independent switches, so never compare the mask for equality.
 pub fn cell_attrs(w0: Int) -> Int
-    bits.band(int.shr_logical(w0, 16), 255)
+    int.shr_logical(w0, 16) & 255
 // The foreground of a cell, 24-bit RGB packed as r<<16 | g<<8 | b —
 // word 0, bits 24..47.  Always a colour, never a palette index: the
 // parser resolves indexed SGR through the session palette before the
 // cell is written.
 pub fn cell_fg(w0: Int) -> Int
-    bits.band(int.shr_logical(w0, 24), 16777215)
+    int.shr_logical(w0, 24) & 16777215
 // The background of a cell, 24-bit RGB packed as r<<16 | g<<8 | b.  It
 // lives alone in word 1, so this reader takes word 1 — the value
 // `grid_get_w1` returns — and not word 0.
 pub fn cell_bg(w1: Int) -> Int
-    bits.band(w1, 16777215)
+    w1 & 16777215
 
 // Default fg / bg as RGB (resolved from palette[7] / palette[0]
 // via the C-side default seed — matches the same xterm ANSI
@@ -653,13 +650,13 @@ fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io, ffi]
 // SGR 30..37 / 90..97 through novo_term_palette_lookup before calling
 // these, so a live palette change affects only cells written after it.
 pub fn grid_set_fg(g: Grid, fg_rgb: Int) -> Grid
-    g.fg = bits.band(fg_rgb, 16777215)
+    g.fg = fg_rgb & 16777215
     g
 
 // Set the background every following `grid_put_char` writes, as 24-bit
 // RGB.  See `grid_set_fg` for why this is never a palette index.
 pub fn grid_set_bg(g: Grid, bg_rgb: Int) -> Grid
-    g.bg = bits.band(bg_rgb, 16777215)
+    g.bg = bg_rgb & 16777215
     g
 
 // Replace the WHOLE attribute mask.  Only two callers want this: a
@@ -667,17 +664,17 @@ pub fn grid_set_bg(g: Grid, bg_rgb: Int) -> Grid
 // rendition must use grid_add_attr / grid_clear_attr instead — using
 // this one is what made `CSI 1;4m` render underline without bold.
 pub fn grid_set_attrs(g: Grid, attrs: Int) -> Grid
-    g.attrs = bits.band(attrs, 255)
+    g.attrs = attrs & 255
     g
 
 // Turn one attribute bit ON, leaving the rest of the mask alone.
 pub fn grid_add_attr(g: Grid, bit: Int) -> Grid
-    g.attrs = bits.band(bits.bor(g.attrs, bit), 255)
+    g.attrs = (g.attrs | bit) & 255
     g
 
 // Turn one attribute bit OFF, leaving the rest of the mask alone.
 pub fn grid_clear_attr(g: Grid, bit: Int) -> Grid
-    g.attrs = bits.band(g.attrs, bits.band(bits.bnot(bit), 255))
+    g.attrs = g.attrs & ((~bit) & 255)
     g
 
 // SGR 0 (reset) reads the RUNTIME defaults rather than the
@@ -961,17 +958,17 @@ pub fn grid_mouse_sgr_code(mode: Int, mods: Int, motion: Bool, button: Int) -> I
     else
         // Which button is physically held (bits 3/4/5): left→0, mid→1,
         // right→2, none→3.
-        let held = if bits.band(mods, 8) != 0
+        let held = if (mods & 8) != 0
             0
-        else if bits.band(mods, 16) != 0
+        else if (mods & 16) != 0
             1
-        else if bits.band(mods, 32) != 0
+        else if (mods & 32) != 0
             2
         else
             3
-        let report_drag = bits.band(mode, 2) != 0
-        let report_any = bits.band(mode, 4) != 0
-        let report_clicks = bits.band(mode, 7) != 0
+        let report_drag = (mode & 2) != 0
+        let report_any = (mode & 4) != 0
+        let report_clicks = (mode & 7) != 0
         let eff_button = if motion
             held
         else
@@ -987,11 +984,11 @@ pub fn grid_mouse_sgr_code(mode: Int, mods: Int, motion: Bool, button: Int) -> I
             0 - 1
         else
             // SGR modifier offsets: +8 meta, +16 ctrl, +32 motion.
-            let ctrl_bit = if bits.band(mods, 2) != 0
+            let ctrl_bit = if (mods & 2) != 0
                 16
             else
                 0
-            let alt_bit = if bits.band(mods, 4) != 0
+            let alt_bit = if (mods & 4) != 0
                 8
             else
                 0
@@ -1003,7 +1000,7 @@ pub fn grid_mouse_sgr_code(mode: Int, mods: Int, motion: Bool, button: Int) -> I
 
 fn grid_mouse_mode_bit_on(g: Grid, bit: Int) -> Grid [io, ffi]
     let cur = array_i64_get_h(g.alt_meta, 14)
-    array_i64_set_h(g.alt_meta, 14, bits.bor(cur, bit))
+    array_i64_set_h(g.alt_meta, 14, cur | bit)
     g
 
 fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io, ffi]
@@ -1011,7 +1008,7 @@ fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io, ffi]
     // Clear `bit`: AND with ~bit.  No bitwise-not in Novo std —
     // use XOR with all-ones-mask = ~bit when current bit is set.
     // Simpler: subtract if present.
-    let new = if bits.band(cur, bit) != 0
+    let new = if (cur & bit) != 0
         cur - bit
     else
         cur
@@ -1528,7 +1525,7 @@ fn reflow_cells(old_cells: Int, old_cols: Int, old_rows: Int, old_wrap: Int, new
         new_cols - 1
     else
         new_c
-    int.shl(pr, 32) + bits.band(pc, 4294967295)
+    int.shl(pr, 32) + (pc & 4294967295)
 
 // Copy `old_cells` into `new_cells` cell-by-cell, top-left
 // aligned, clipping at the smaller of (old_rows/cols,
@@ -1603,7 +1600,7 @@ pub fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io, ffi]
             let end_packed = reflow_cells(g.cells, g.cols, g.rows, g.wrap_flags,
                                      new_active, new_cols, new_rows, new_wrap)
             reflow_cur_r = int.shr_logical(end_packed, 32)
-            reflow_cur_c = bits.band(end_packed, 4294967295)
+            reflow_cur_c = end_packed & 4294967295
         array_i64_drop_h(g.cells)
         if active_is_alt
             // The alt buffer was just freed via g.cells — reuse new_active

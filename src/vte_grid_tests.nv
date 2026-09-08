@@ -664,7 +664,7 @@ fn test_sgr_two_attributes_in_one_sequence_both_stick() [io]
     let p = parser.parser_new()
     let g0 = grid.grid_new(2, 4)
     let g1 = feed_str(p, g0, esc() + "[1;4mA" + esc() + "[0m")
-    let both = bits.bor(grid.attr_bold(), grid.attr_underline())
+    let both = grid.attr_bold() | grid.attr_underline()
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), both)
     parser.parser_drop(p)
     grid.grid_drop(g1)
@@ -674,7 +674,7 @@ fn test_sgr_attribute_order_does_not_matter() [io]
     let p = parser.parser_new()
     let g0 = grid.grid_new(2, 4)
     let g1 = feed_str(p, g0, esc() + "[4;1mA" + esc() + "[0m")
-    let both = bits.bor(grid.attr_bold(), grid.attr_underline())
+    let both = grid.attr_bold() | grid.attr_underline()
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), both)
     parser.parser_drop(p)
     grid.grid_drop(g1)
@@ -687,7 +687,7 @@ fn test_sgr_24_clears_only_underline() [io]
     let p = parser.parser_new()
     let g0 = grid.grid_new(2, 4)
     let g1 = feed_str(p, g0, esc() + "[1m" + esc() + "[7mA" + esc() + "[24mB")
-    let bold_rev = bits.bor(grid.attr_bold(), grid.attr_reverse())
+    let bold_rev = grid.attr_bold() | grid.attr_reverse()
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), bold_rev)
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)), bold_rev)
     parser.parser_drop(p)
@@ -698,12 +698,11 @@ fn test_sgr_22_and_27_clear_only_their_own_bit() [io]
     let p = parser.parser_new()
     let g0 = grid.grid_new(2, 6)
     let g1 = feed_str(p, g0, esc() + "[1;4;7mA" + esc() + "[22mB" + esc() + "[27mC")
-    let all3 = bits.bor(bits.bor(grid.attr_bold(), grid.attr_underline()),
-                        grid.attr_reverse())
+    let all3 = (grid.attr_bold() | grid.attr_underline()) | grid.attr_reverse()
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)), all3)
     // 22 drops bold, leaves underline + reverse.
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)),
-                   bits.bor(grid.attr_underline(), grid.attr_reverse()))
+                   grid.attr_underline() | grid.attr_reverse())
     // 27 drops reverse, leaves underline.
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 2)), grid.attr_underline())
     parser.parser_drop(p)
@@ -721,7 +720,7 @@ fn test_sgr_italic_and_strike_have_their_own_bits() [io]
     test.assert_eq(grid.attr_italic(), 16)
     test.assert_eq(grid.attr_strike(), 32)
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 0)),
-                   bits.bor(grid.attr_italic(), grid.attr_strike()))
+                   grid.attr_italic() | grid.attr_strike())
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 1)), grid.attr_strike())
     test.assert_eq(grid.cell_attrs(grid.grid_get(g1, 0, 2)), 0)
     parser.parser_drop(p)
@@ -838,7 +837,7 @@ fn test_sgr_state_applies_to_later_writes_only() [io]
     test.assert_eq(grid.cell_fg(grid.grid_get(gA, 0, 1)), 0xff0000)
     test.assert_eq(grid.cell_bg(grid.grid_get_w1(gA, 0, 1)), 0x0000ff)
     test.assert_eq(grid.cell_attrs(grid.grid_get(gA, 0, 1)),
-                   bits.bor(grid.attr_bold(), grid.attr_italic()))
+                   grid.attr_bold() | grid.attr_italic())
     // Clearing bold left italic standing.
     test.assert_eq(grid.cell_attrs(grid.grid_get(gA, 0, 2)), grid.attr_italic())
     // Reset returned every field to the session default.
@@ -858,12 +857,8 @@ fn test_attribute_bits_are_the_documented_values() [io]
     test.assert_eq(grid.attr_strike(), 32)
     // Bit 3 (value 8) is the renderer's bar-cursor shape and belongs to
     // no rendition, which is why italic starts at 16.
-    let all = bits.bor(bits.bor(bits.bor(bits.bor(
-        grid.attr_bold(), grid.attr_underline()),
-        grid.attr_reverse()),
-        grid.attr_italic()),
-        grid.attr_strike())
-    test.assert_eq(bits.band(all, 8), 0)
+    let all = (((grid.attr_bold() | grid.attr_underline()) | grid.attr_reverse()) | grid.attr_italic()) | grid.attr_strike()
+    test.assert_eq(all & 8, 0)
 
 // The four control characters a pty stream is full of.
 @test
