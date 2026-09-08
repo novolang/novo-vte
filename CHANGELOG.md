@@ -6,6 +6,8 @@ registry](https://novo-lang.org/docs/registry/semver.html).
 
 ## 0.2.3
 
+- **Declares its layer**: `layer = "host"` in the manifest — the grid declares `[io, ffi]` today for memory-only externs, which two compiler-side filings own; when they close the package becomes `core` with no change to its layout, and `novo pkg publish` now checks the code against that budget.  The layers are described under Design in the [publishing guide](https://novo-lang.org/docs/publishing.html#design).
+- `bits.*` calls are the operators they lower to (`&`, `|`, `^`, `<<`, `>>>`, `~`), rewritten by `novo rewrite --bits-to-operators` where the checker proves the operands `Int`; every test vector byte-identical.  Sources reformatted to the canonical form.
 - Relicensed from MIT to Apache-2.0, so every first-party package carries
   one licence and the patent grant that comes with it.  The copyright
   holder is unchanged and no third-party code is involved; releases
