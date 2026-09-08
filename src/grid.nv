@@ -486,7 +486,7 @@ pub fn grid_new(rows: Int, cols: Int) -> Grid [io, ffi]
         array_i64_set_h(h, 2 * i + 1, bw1)
         i = i + 1
     let meta = array_i64_alloc_h(alt_meta_slots())
-    for i in 0 .. alt_meta_slots()
+    for i in 0..alt_meta_slots()
         array_i64_set_h(meta, i, 0)
     // Slots 0 (stashed primary cells) and 1 (lazily-allocated alt buffer)
     // hold ARRAY HANDLES, and 0 is a perfectly valid handle — the first
@@ -520,7 +520,7 @@ pub fn grid_new(rows: Int, cols: Int) -> Grid [io, ffi]
     let sb = scrollback_new(scrollback_capacity(), cols)
     // Per-row wrap flags, all zero: a fresh grid has no soft wraps.
     let wf = array_i64_alloc_h(rows)
-    for i in 0 .. rows
+    for i in 0..rows
         array_i64_set_h(wf, i, 0)
     Grid {
     rows: rows, cols: cols,
@@ -744,8 +744,8 @@ pub fn grid_scroll_up(g: Grid) -> Grid [io, ffi]
         scrollback_push_row(g.scrollback, g.cells, grid_idx(g, 0, 0))
     let bw0 = blank_word0()
     let bw1 = blank_word1()
-    for r in top .. bot
-        for c in 0 .. g.cols
+    for r in top..bot
+        for c in 0..g.cols
             cells_copy(g.cells, grid_idx(g, r, c),
                   g.cells, grid_idx(g, r + 1, c))
     // Shift the per-row wrap_flags alongside the cells so the
@@ -753,14 +753,14 @@ pub fn grid_scroll_up(g: Grid) -> Grid [io, ffi]
     // scroll-up.  Without this, marked-soft-wrap rows keep their
     // mark on the row index they USED to occupy, mis-identifying
     // logical lines on the next reflow.
-    for r in top .. bot
+    for r in top..bot
         let next = array_i64_get_h(g.wrap_flags, r + 1)
         array_i64_set_h(g.wrap_flags, r, next)
     array_i64_set_h(g.wrap_flags, bot, 0)
     // Blank the now-empty BOTTOM ROW OF THE REGION, not the grid's
     // last row — that would punch a hole below the region for any
     // partial-region scroll.
-    for c in 0 .. g.cols
+    for c in 0..g.cols
         cells_blank(g.cells, grid_idx(g, bot, c), bw0, bw1)
     g
 
@@ -1058,7 +1058,7 @@ pub fn grid_line_feed(g: Grid) -> Grid [io, ffi]
 fn fill_row_range(g: Grid, row: Int, c0: Int, c1: Int) [io, ffi]
     let bw0 = blank_word0()
     let bw1 = blank_word1()
-    for c in c0 .. c1
+    for c in c0..c1
         cells_blank(g.cells, grid_idx(g, row, c), bw0, bw1)
 
 // EL — Erase in Line.  mode 0: cursor → end of line.
@@ -1077,14 +1077,14 @@ pub fn grid_erase_line(g: Grid, mode: Int) -> Grid [io, ffi]
 pub fn grid_erase_display(g: Grid, mode: Int) -> Grid [io, ffi]
     if mode == 0
         fill_row_range(g, g.cursor_row, g.cursor_col, g.cols)
-        for r in g.cursor_row + 1 .. g.rows
+        for r in g.cursor_row + 1..g.rows
             fill_row_range(g, r, 0, g.cols)
     if mode == 1
-        for r in 0 .. g.cursor_row
+        for r in 0..g.cursor_row
             fill_row_range(g, r, 0, g.cols)
         fill_row_range(g, g.cursor_row, 0, g.cursor_col + 1)
     if mode == 2
-        for r in 0 .. g.rows
+        for r in 0..g.rows
             fill_row_range(g, r, 0, g.cols)
     g
 
@@ -1593,7 +1593,7 @@ pub fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid [io, ffi]
         // width.  Reflow returns the end position packed
         // (row << 32) | col so the cursor follows the content.
         let new_wrap = array_i64_alloc_h(new_rows)
-        for wi in 0 .. new_rows
+        for wi in 0..new_rows
             array_i64_set_h(new_wrap, wi, 0)
         var reflow_cur_r = 0
         var reflow_cur_c = 0
@@ -1753,8 +1753,8 @@ pub fn grid_reset_view(g: Grid) -> Grid [io, ffi]
 // header so test harnesses can assert on it.
 pub fn grid_to_string(g: Grid) -> Str [io, ffi]
     var out = "@ " + str.from_int(g.cursor_row) + "," + str.from_int(g.cursor_col) + "\n"
-    for r in 0 .. g.rows
-        for c in 0 .. g.cols
+    for r in 0..g.rows
+        for c in 0..g.cols
             // Go through grid_get rather than the raw array: a cell is TWO
             // i64 words and grid_idx is a cell index, so a raw read needs
             // the ×2 stride.  An unscaled read interleaves w0 and w1, and
