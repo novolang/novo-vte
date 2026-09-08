@@ -417,7 +417,7 @@ fn reset_csi(p: Parser) [io, ffi]
     array_i64_set_h(p.slots, slot_intermediate(), 0)
     // Pre-seed param slots with -1 (missing) so parser_param's
     // default-fallback fires correctly for omitted positions.
-    for i in 0 .. max_params()
+    for i in 0..max_params()
         array_i64_set_h(p.slots, slot_params_base() + i, -1)
 
 fn set_state(p: Parser, s: Int) [io, ffi]
