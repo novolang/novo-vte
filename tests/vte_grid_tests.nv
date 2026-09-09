@@ -1,7 +1,7 @@
 // vte_grid_tests.nv — @test fns for novo-vte's Grid model.
 //
 // Run from the package dir:
-//   novo test src/vte_grid_tests.nv
+//   novo test tests/vte_grid_tests.nv
 //
 // novo-vte is pure Novo (std.array via @ffi and nothing else), so
 // these run headless — no PTY, no window, no GPU.  That matters:

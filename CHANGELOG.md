@@ -4,6 +4,17 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## Unreleased
+
+- **The contract suite moved out of `src/`** — `vte_grid_tests.nv` (758
+  lines) now lives under `tests/`, which is where
+  `orbit/package-template` puts a suite and for the reason it gives:
+  `src/` ships whole, so a consumer compiled it, the published archive
+  carried it, and `novo doc` printed a third module section for it — a
+  reader opening the package's page to learn what it does was shown its
+  test suite beside `grid` and `parser`.  The reference is now two
+  modules.  Nothing a consumer calls changes.
+
 ## 0.2.3
 
 - **Declares its layer**: `layer = "host"` in the manifest — the grid declares `[io, ffi]` today for memory-only externs, which two compiler-side filings own; when they close the package becomes `core` with no change to its layout, and `novo pkg publish` now checks the code against that budget.  The layers are described under Design in the [publishing guide](https://novo-lang.org/docs/publishing.html#design).

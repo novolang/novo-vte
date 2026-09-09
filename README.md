@@ -44,7 +44,7 @@ fn main() [io, ffi]
 
 ```
 novo pkg build                       # build the package
-novo test src/vte_grid_tests.nv      # 30 tests
+novo test tests/vte_grid_tests.nv    # 30 tests
 ```
 
 ## The reference
@@ -181,7 +181,7 @@ Bit 3 is not free.  A new rendition takes bit 6 or 7.
 ## Tests
 
 ```
-novo test src/vte_grid_tests.nv      # 30 tests
+novo test tests/vte_grid_tests.nv    # 30 tests
 novo test src/grid.nv                # the documented examples in grid
 novo test src/parser.nv              # the documented examples in parser
 ```
