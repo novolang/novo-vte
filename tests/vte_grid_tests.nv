@@ -1211,7 +1211,7 @@ fn test_device_queries_queue_a_reply_the_caller_drains() [io]
     let g2 = feed_str(p, g1, esc() + "[6n")
     var reply = ""
     for i in 0..parser.parser_response_count(p)
-        reply = reply + str.from_char(parser.parser_response_byte_at(p, i))
+        reply = reply + str.from_byte(parser.parser_response_byte_at(p, i))
     test.assert_eq(reply, esc() + "[2;4R")
     // Draining is the caller's job; nothing clears the queue on its own.
     test.assert_eq(parser.parser_response_count(p), 6)

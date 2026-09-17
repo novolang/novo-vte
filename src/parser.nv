@@ -243,7 +243,7 @@ pub fn parser_drop(p: Parser) [io, ffi]
 //         var title = ""
 //         var i = 0
 //         while i < parser.parser_osc_payload_len(p)
-//             title = title + str.from_char(parser.parser_osc_payload_byte(p, i))
+//             title = title + str.from_byte(parser.parser_osc_payload_byte(p, i))
 //             i = i + 1
 //         println("${parser.parser_osc_code(p)} ${title}")   // 0 hi
 //         parser.parser_osc_clear(p)
@@ -350,7 +350,7 @@ fn osc_accum_finalise(p: Parser) [io, ffi]
 //     var reply = ""
 //     var i = 0
 //     while i < parser.parser_response_count(p)
-//         reply = reply + str.from_char(parser.parser_response_byte_at(p, i))
+//         reply = reply + str.from_byte(parser.parser_response_byte_at(p, i))
 //         i = i + 1
 //     parser.parser_response_clear(p)
 //     println("${str.len(reply)}")            // 6:  ESC [ 2 ; 4 R
