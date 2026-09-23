@@ -2,7 +2,7 @@
 
 [ansi-nv]
 source = "registry"
-url = "http://127.0.0.1:56511"
+url = "https://registry.novo-lang.org"
 req = "^0.2.0"
 version = "0.2.0"
-hash = "e7785ff396ffa80fdd2a88205d3d79f7f982a5ab0220162fbf648c02f55d1ada"
+hash = "2e2e3846aa94e30b125859f12a2ecc3750f3347524c675fffa937227fe4828bf"
