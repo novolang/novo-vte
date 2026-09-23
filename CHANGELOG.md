@@ -6,6 +6,58 @@ registry](https://novo-lang.org/docs/registry/semver.html).
 
 ## Unreleased
 
+- **The escape-sequence parser is `ansi-nv`'s.**  `src/parser.nv` no
+  longer carries a state machine: it depends on `ansi-nv ^0.2.0`, feeds
+  each byte to `vtparse.feed`, reads what the byte asked for with
+  `vtparse.action_of`, and maps that action onto a grid operation.  The
+  twenty-five functions that read bytes — the six `feed_*` state
+  handlers, the UTF-8 decoder, the parameter collector and the slot
+  accessors under them — are gone, and what is left is the glue a grid
+  model owns: the CSI final-byte table, the DEC private modes, the SGR
+  fold onto a cell's two words, the replies a terminal owes the host
+  for DA, DSR and CPR, and the OSC payload it holds for its caller.  The public surface is unchanged, and so is
+  every existing test.  Three answers change, each one a defect in the
+  parser that is gone: `CSI 38:2::R:G:B m` sets the colour it names
+  rather than reading the colon form as one long number; `CSI 58 ; 2 ;
+  0 ; 0 ; 0 m` leaves the other attributes standing rather than reading
+  its channels as SGR 0; and a C0 control inside a control sequence
+  acts where ECMA-48 §5.4 says it does.
+
+- **The parser is held as a value, not packed into an array.**
+  `ansi-nv` 0.2.0's parser is a seventy-two-byte value over
+  fixed-capacity buffers, and a `Parser` keeps it in a flat buffer of
+  one, which is one owned allocation written and read in place.  What
+  went with the move: the twenty-slot round trip that wrote the
+  parser's state, parameters and intermediates into an `i64` array
+  after every byte and read them back before the next one, the two
+  functions that were its ends, the twelve-case pair that encoded the
+  machine's state as an integer and decoded it again, and the
+  192-entry parameter region the array carried for them.  `Parser` is
+  two side-arrays and the machine, and `parser_state` reads the state
+  off the machine rather than out of a slot.  Measured by
+  `orbit/novoterm`'s `bench_parse` probe on the same 10 040-byte
+  stream, best of four runs on one workstation: 10.4 MB/s before,
+  17.1 MB/s after, against the suite's 50 KB/s bar.
+
+- **A sequence that breaks a ceiling is dropped rather than
+  truncated.**  A control sequence may carry 16 parameters, counting a
+  colon group as one, and a parameter may hold 65534; both are the
+  state machine's own capacity, and a sequence over either is dropped.
+  Three colours in the colon form is eighteen entries and is dropped;
+  the semicolon form of the same three is fifteen and still fits.  A
+  sequence may carry two intermediate bytes.  An OSC payload past the
+  8192-byte cap is refused at the byte that passes it, the rest is
+  consumed to the terminator, and nothing is handed to the caller — so
+  a window title or a clipboard write that is too long has no effect
+  rather than a truncated one.
+
+- **The replies a device query gets are `vtquery`'s bytes.**  DA,
+  secondary DA, DSR and CPR were four escape sequences spelled out as
+  string literals beside a parser that reads the same four.  They are
+  now `vtquery.write_reply`, which produces them byte for byte —
+  `ESC [ ? 62 ; 22 c`, `ESC [ > 0 ; 1 ; 0 c`, `ESC [ 0 n` and
+  `ESC [ <row> ; <col> R` are unchanged on the wire.
+
 - **The contract suite moved out of `src/`** — `vte_grid_tests.nv` (758
   lines) now lives under `tests/`, which is where
   `orbit/package-template` puts a suite and for the reason it gives:

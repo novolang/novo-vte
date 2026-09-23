@@ -101,18 +101,32 @@ organised by; the page itself carries the signatures.
 
 | Limit | Value | What it bounds |
 |---|---|---|
-| OSC payload | 8192 bytes | one `\e]…` payload after the `N;` prefix.  Sized for OSC 52, whose base64 body carries 3/4 its length in text — a ~6 KB selection.  Bytes past the cap are dropped silently; the accumulator has no way to report. |
+| OSC payload | 8192 bytes | one `\e]…` payload after the `N;` prefix.  Sized for OSC 52, whose base64 body carries 3/4 its length in text — a ~6 KB selection.  A payload that passes the cap is dropped whole: the rest of it is consumed to the terminator and nothing is handed to the caller. |
 | Reply channel | 64 bytes | the parser's answers to device queries (DA, DA2, DSR, CPR), drained by the caller's pump after each byte |
+| Parameters | 16 per sequence | the numbers of one control sequence, counting a colon group as one.  A sequence with more is dropped. |
+| Parameter value | 65534 | the largest number one parameter may hold.  A larger one is dropped rather than wrapped, because a wrapped value is a cursor move nobody asked for. |
+| Intermediate bytes | 2 per sequence | the bytes between the parameters and the final byte |
 
-Both are fixed-size `i64` arrays inside `Parser`, so the OSC cap costs
-64 KB per parser — one per pane in a mux.
+The first two are fixed-size `i64` arrays inside `Parser`, so the OSC
+cap costs 64 KB per parser — one per pane in a mux.  The last three are
+the state machine's own capacity and cost nothing per parser: a
+`Parser` holds the machine as seventy-two bytes.
 
 Two modules:
 
 | Module | What it holds |
 |---|---|
 | `grid` (`src/grid.nv`) | the cell store, the cursor, scroll regions, the alt screen, and the cell packing / unpacking helpers |
-| `parser` (`src/parser.nv`) | the byte-at-a-time state machine: ground, ESC, CSI, OSC, DCS, UTF-8 continuation |
+| `parser` (`src/parser.nv`) | what a sequence does to the grid: the CSI final-byte table, the DEC private modes, the SGR fold, the reply channel and the OSC payload |
+
+The state machine under `parser` is
+[ansi-nv](https://novo-lang.org/packages/ansi-nv)'s: a byte goes to
+`vtparse.feed`, which answers the parser after it, `vtparse.action_of`
+says what the byte asked for, and this package decides what the screen
+does about it.  A terminal and a multiplexer
+that disagreed about what a sequence *meant* is the bug this package
+exists to prevent; one parser for what a sequence *says* is the same
+argument one level down.
 
 ## The cell format
 

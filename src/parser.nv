@@ -1,20 +1,20 @@
-// parser.nv — ANSI / xterm escape-sequence parser, shared by novoterm
-// and novomux.
+// parser.nv — what a terminal does about an escape sequence.
 //
-// State machine loosely tracking the DEC parser (Williams, "A parser
-// for DEC's ANSI-compatible video terminals").  Sequence semantics
-// follow ECMA-48 / ISO 6429 for the standard functions and xterm's
-// `ctlseqs` for the DEC private modes.
+// The sequences themselves are read by `ansi-nv`: its `vtparse` is the
+// state machine, `feed` answers the parser after one byte, and
+// `action_of` says what that byte asked for.  This module is the other
+// half — the map from an action to an operation on a `Grid`, plus the
+// two things a grid model owns that an escape-sequence package cannot:
+// the replies a terminal owes the host for a device query, and the OSC
+// payload it holds for its caller.
 //
-// WHAT IS INTERPRETED — this list is the parser's contract; each entry
-// has a `dispatch_*` / `feed_*` arm below.
+// WHAT IS ACTED ON — this list is the module's contract; each entry
+// has a `dispatch_*` / `apply_*` arm below.
 //
-//   text     printable ASCII and 2/3/4-byte UTF-8 (see the lead-byte
-//            table further down).  One codepoint = one cell.
-//   C0       BS, HT, LF, CR act; BEL and every other C0 byte are
+//   text     `AnsiPrint` puts one codepoint in one cell.
+//   C0       BS, HT, LF and CR act; BEL and every other C0 byte are
 //            dropped.
-//   ESC      7 / 8 (DECSC / DECRC), D / E / M (IND / NEL / RI),
-//            ( <byte> (charset designate — the byte is consumed).
+//   ESC      7 / 8 (DECSC / DECRC), D / E / M (IND / NEL / RI).
 //   CSI      A B C D (CUU CUD CUF CUB), H f (CUP HVP), E F (CNL CPL),
 //            G ` (CHA HPA), d (VPA), a e (HPR VPR), J K (ED EL),
 //            L M (IL DL), @ P (ICH DCH), X (ECH), S T (SU SD),
@@ -25,12 +25,11 @@
 //   OSC      accumulated into the `osc` side-array and handed to the
 //            caller to dispatch; this module does not act on it.
 //
-// WHAT IS CONSUMED BUT NOT ACTED ON — deliberately, so the payload
-// cannot leak into ground state and be re-parsed as text:
+// WHAT IS CONSUMED BUT NOT ACTED ON — deliberately:
 //   - DCS, SOS, PM and APC strings (so no sixel, no ReGIS, no
 //     DECRQSS / XTGETTCAP replies).
-//   - The charset byte after ESC ( — output is always treated as
-//     ASCII/UTF-8, never as a DEC line-drawing set.
+//   - The charset byte of `ESC ( <byte>` and its neighbours — output
+//     is always ASCII / UTF-8, never a DEC line-drawing set.
 //   - Every CSI final and private mode not listed above, plus
 //     ESC = / ESC > (DECPAM / DECPNM) and ESC c (RIS).
 //
@@ -39,22 +38,13 @@
 // `?1049` is defined as save + switch + clear.  All three take the
 // save+switch+clear path here.
 //
-// State storage: Parser is a struct wrapping a single
-// std.array i64 handle.  Slot layout:
-//
-//   slot 0   : state machine state (ParserState enum codes)
-//   slot 1   : param count (0..MAX_PARAMS)
-//   slot 2   : current param accumulator (collecting digits)
-//   slot 3   : has_current_param flag (0/1)
-//   slot 4   : intermediate byte (e.g. '?' for DEC private)
-//   slot 5   : OSC-string saw-ESC flag
-//   slot 6..5+MAX_PARAMS : param values
-//   slot 22  : UTF-8 partial codepoint accumulator
-//   slot 23  : UTF-8 continuation bytes still owed
-//
-// MAX_PARAMS = 16, so slots 6..21 are params and slots_total() is 24.
-// Per-byte cost is O(1) array reads/writes — no struct cloning on the
-// hot path, which is what makes a byte-at-a-time feed viable.
+// State storage: the state machine is `vtcore.AnsiParser`, a value of
+// seventy-two bytes over fixed-capacity buffers, and a `Parser` keeps
+// it in a flat buffer of one.  Feeding a byte writes that buffer, so it
+// changes the parser the caller is holding instead of handing back a
+// new one, and it allocates nothing.  The two side-arrays hold what the
+// state machine does not: the replies the terminal owes its host, and
+// the OSC payload it holds for its caller.
 //
 // A parser in use.  It owns no output of its own: a byte goes in, a
 // `Grid` comes back changed, and the caller decides what to draw.  The
@@ -96,6 +86,10 @@ fn array_i64_set_h(h: Int, i: Int, v: Int) [io, ffi]
 fn array_i64_drop_h(h: Int) [io, ffi]
 
 use grid
+use vtcore
+use vtparse
+use vtquery
+use sgr
 
 // ── Constants ───────────────────────────────────────────────────
 
@@ -118,43 +112,26 @@ pub fn st_csi_param() -> Int
 pub fn st_osc_string() -> Int
     3
 // "In the middle of a multi-byte UTF-8 codepoint, waiting for
-// continuation bytes."
+// continuation bytes."  A chunk boundary lands here whenever a read
+// splits a character.
 pub fn st_utf8_cont() -> Int
     4
-// Consuming a Device Control String payload until ST (ESC \) or BEL.
-// Apps use DCS for terminfo capability queries (`\eP+q…\e\`, xterm's
-// XTGETTCAP); dropping the payload here keeps its bytes from leaking
-// into ground state and being re-parsed as text and stray CSIs.
+// Inside a DCS, SOS, PM or APC string, consuming the payload to its
+// terminator without interpreting it.
 pub fn st_dcs_string() -> Int
     5
 
-fn max_params() -> Int
-    16
-
-// 22 slots for the CSI machine (see the slot map in the header) plus
-// two for UTF-8 partial-codepoint state: the accumulated lead-byte
-// payload and how many continuation bytes are still owed.
-fn slots_total() -> Int
-    24
-
-fn slot_state() -> Int
-    0
-fn slot_param_count() -> Int
-    1
-fn slot_current_param() -> Int
-    2
-fn slot_has_current() -> Int
-    3
-fn slot_intermediate() -> Int
-    4
-fn slot_osc_saw_esc() -> Int
-    5
-fn slot_utf8_acc() -> Int
-    22
-fn slot_utf8_remaining() -> Int
-    23
-fn slot_params_base() -> Int
-    6
+// The ceilings `vtparse` enforces, as a terminal emulator on a machine
+// with memory wants them.  `osc_bytes_max` matches `osc_cap` so that
+// the payload accumulator below and the parser stop at the same place.
+// The parameter ceilings are the package's own capacity: sixteen
+// entries, counting a colon group as one, and 65534 as the largest
+// value a parameter may hold.  A field is stored at the width its range
+// needs, so a value read out of one is cast on the way into an `Int`.
+fn vte_limits() -> vtcore.AnsiLimits
+    AnsiLimits { param_max: 65534, osc_bytes_max: osc_cap() as u32,
+                 dcs_bytes_max: 4096, params_max: 16, subs_max: 6,
+                 intermediates_max: 2 }
 
 // ── Parser handle ───────────────────────────────────────────────
 
@@ -164,11 +141,22 @@ fn slot_params_base() -> Int
 // so one Parser belongs to one stream of bytes, and a multiplexer keeps
 // one per pane.
 //
-// The three fields are raw array handles, which is why a Parser is made
-// with `parser_new` and released with `parser_drop` rather than built as
-// a literal.
+// Two of the three fields are raw array handles, which is why a Parser
+// is made with `parser_new` and released with `parser_drop` rather than
+// built as a literal.
 pub struct Parser
-    slots: Int
+    // The escape-sequence state machine, in a buffer of one.  A
+    // `@value` struct in a field of a boxed struct is one of the five
+    // crossings SPEC § 14.5 names, and the store there copies it into a
+    // cell — one cell per byte fed.  A `[V]` is one owned allocation
+    // holding the value flat (§ 14.6), so a buffer of one is written
+    // and read in place and the byte path allocates nothing for it.
+    // The element type is named without the module prefix because a
+    // module-qualified `@value` type is not recognised as the element
+    // of a flat buffer on this toolchain (novo bug
+    // types-values/module-qualified-value-type-refused-as-a-value-field);
+    // the `use vtcore` line above is what makes the bare name resolve.
+    ansi: [AnsiParser]
     // Side-array for response bytes queued in answer to host
     // probes (DA, CPR, DSR).  Slot 0
     // holds the count; slots 1..64 hold up to 64 reply bytes.  A
@@ -180,7 +168,8 @@ pub struct Parser
     //   slot 0: pending flag (0 = no, 1 = ready for caller dispatch)
     //   slot 1: parsed OSC code (the N in `OSC N ; <payload> ST`)
     //   slot 2: payload byte count
-    //   slot 3..osc_cap()+2: payload bytes (after the `N;` prefix)
+    //   slot 3: refused flag (1 = the payload passed `osc_cap`)
+    //   slot 4..osc_cap()+3: payload bytes (after the `N;` prefix)
     osc: Int
 
 fn response_cap() -> Int
@@ -194,30 +183,30 @@ fn response_cap() -> Int
 //
 // The cost is one i64 per byte per Parser, so this buffer is 64 KB
 // and a Parser is a little over that.  novomux allocates one per
-// pane; ten panes is 640 KB, which is the trade this size is.  Bytes
-// past the cap are dropped, silently — the append below has no way to
-// report, and an OSC that overflows is the application's to keep
-// under the terminal's advertised limit.
+// pane; ten panes is 640 KB, which is the trade this size is.  A
+// payload past the cap breaks `vte_limits`'s `osc_bytes_max`: the
+// parser reports the refusal, drops the rest of the payload and fires
+// `AnsiOscEnd` at the terminator, and the refusal is remembered here so
+// the string is dropped whole rather than handed on cut short.
 fn osc_cap() -> Int
     8192
 
 // Allocate a parser in the ground state, with an empty reply queue and
 // no OSC pending.  Release it with `parser_drop`; each one costs a
-// little over 64 KB, most of it the OSC accumulator.
+// little over 64 KB, almost all of it the OSC accumulator.
 pub fn parser_new() -> Parser [io, ffi]
-    let h = array_i64_alloc_h(slots_total())
     let resp = array_i64_alloc_h(response_cap() + 1)
     array_i64_set_h(resp, 0, 0)
-    let osc = array_i64_alloc_h(osc_cap() + 3)
+    let osc = array_i64_alloc_h(osc_cap() + 4)
     array_i64_set_h(osc, 0, 0)   // not pending
     array_i64_set_h(osc, 1, 0)   // code
     array_i64_set_h(osc, 2, 0)   // payload len
-    Parser { slots: h, response: resp, osc: osc }
+    array_i64_set_h(osc, 3, 0)   // not refused
+    Parser { ansi: [vtparse.parser_with(vte_limits())], response: resp, osc: osc }
 
-// Release the parser's three backing arrays.  The Grid it was feeding is
+// Release the parser's two backing arrays.  The Grid it was feeding is
 // separate and is dropped on its own.
 pub fn parser_drop(p: Parser) [io, ffi]
-    array_i64_drop_h(p.slots)
     array_i64_drop_h(p.response)
     array_i64_drop_h(p.osc)
 
@@ -234,18 +223,14 @@ pub fn parser_drop(p: Parser) [io, ffi]
 // use parser
 //
 // fn main() [io, ffi]
-//     var g = grid.grid_new(1, 4)
+//     var g = grid.grid_new(2, 8)
 //     let p = parser.parser_new()
-//     // OSC 0 ; h i BEL — "set the window title to hi"
+//     // OSC 0 ; h i BEL — "set the window title to hi".
 //     for b in [27, 93, 48, 59, 104, 105, 7]
 //         g = parser.parser_feed_byte(p, g, b)
 //     if parser.parser_osc_pending(p)
-//         var title = ""
-//         var i = 0
-//         while i < parser.parser_osc_payload_len(p)
-//             title = title + str.from_byte(parser.parser_osc_payload_byte(p, i))
-//             i = i + 1
-//         println("${parser.parser_osc_code(p)} ${title}")   // 0 hi
+//         println("${parser.parser_osc_code(p)}")          // 0
+//         println("${parser.parser_osc_payload_len(p)}")   // 2
 //         parser.parser_osc_clear(p)
 //     parser.parser_drop(p)
 //     grid.grid_drop(g)
@@ -253,51 +238,69 @@ pub fn parser_drop(p: Parser) [io, ffi]
 pub fn parser_osc_pending(p: Parser) -> Bool [io, ffi]
     array_i64_get_h(p.osc, 0) == 1
 
-// The N in `OSC N ; payload`: 0 or 2 for a window title, 4 for a palette
-// entry, 52 for the clipboard, 10 / 11 for the default fg / bg.  0 when
-// the string carried no leading digits.
+// The `N` of `OSC N ; <payload>`.  Zero when the string carried no
+// leading digits, which is what an unrecognised OSC looks like to a
+// caller that switches on the code.
 pub fn parser_osc_code(p: Parser) -> Int [io, ffi]
     array_i64_get_h(p.osc, 1)
 
-// How many payload bytes the pending OSC carries, after its `N;` prefix
-// has been stripped.  Capped at 8192; bytes past the cap were dropped
-// while the string was accumulating, and nothing here reports that.
+// Payload bytes held, after the `N ;` prefix has been dropped.
 pub fn parser_osc_payload_len(p: Parser) -> Int [io, ffi]
     array_i64_get_h(p.osc, 2)
 
-// Payload byte `i`, for `i` in [0, `parser_osc_payload_len`).  A byte at
-// a time rather than a `Str`, because an OSC 52 payload is base64 and an
-// OSC 4 payload is a colour spec — neither is text to print.
+// Payload byte `i`, for `i` in [0, `parser_osc_payload_len`).
 pub fn parser_osc_payload_byte(p: Parser, i: Int) -> Int [io, ffi]
-    array_i64_get_h(p.osc, 3 + i)
+    array_i64_get_h(p.osc, 4 + i)
 
-// Mark the pending OSC handled.  Call it after acting, or after deciding
-// not to: an OSC left pending is not re-reported, but the accessors keep
-// answering about it until the next one arrives.
+// Mark the pending OSC handled.  The next one is reported on its own,
+// so a caller that never clears sees only the first.
 pub fn parser_osc_clear(p: Parser) [io, ffi]
     array_i64_set_h(p.osc, 0, 0)
     array_i64_set_h(p.osc, 1, 0)
     array_i64_set_h(p.osc, 2, 0)
+    array_i64_set_h(p.osc, 3, 0)
 
 // Push one byte into the in-progress OSC payload accumulator.
-// Cap-bounded; bytes past the limit are dropped (rare for window
-// titles, accept for the corner-case longer payloads).
+// Cap-bounded; the parser refuses the string at the same byte, so a
+// payload that reaches the cap is dropped rather than truncated.
 fn osc_accum_append(p: Parser, b: Int) [io, ffi]
     let n = array_i64_get_h(p.osc, 2)
     if n < osc_cap()
-        array_i64_set_h(p.osc, 3 + n, b)
+        array_i64_set_h(p.osc, 4 + n, b)
         array_i64_set_h(p.osc, 2, n + 1)
 
 fn osc_accum_reset(p: Parser) [io, ffi]
     array_i64_set_h(p.osc, 2, 0)
     array_i64_set_h(p.osc, 1, 0)
+    array_i64_set_h(p.osc, 3, 0)
+
+// The payload passed `osc_bytes_max`.  The parser drops the rest of it
+// and still reports the terminator, so the flag is what keeps the
+// caller from being handed the first `osc_cap` bytes of a string whose
+// remainder it never saw.
+fn osc_accum_refuse(p: Parser) [io, ffi]
+    array_i64_set_h(p.osc, 3, 1)
+
+fn osc_accum_refused(p: Parser) -> Bool [io, ffi]
+    array_i64_get_h(p.osc, 3) == 1
+
+// True for the one fault that is read after the byte that raised it.
+fn osc_too_long(why: vtparse.AnsiFault) -> Bool
+    match why
+        AnsiOscTooLong => true
+        _              => false
 
 // Finalise the in-progress OSC: parse the leading `N ;` prefix
 // into the code field, shift the payload bytes left to drop the
 // prefix, and set the pending flag for the caller to dispatch.
-// Called when feed_osc_string sees BEL or ST.  Robust on
-// malformed OSCs (no digits, no ';') — code stays 0, payload
-// is the whole raw payload; main.nv ignores unrecognised codes.
+// Called on `AnsiOscEnd`.  Robust on malformed OSCs (no digits,
+// no ';') — code stays 0, payload is the whole raw payload;
+// main.nv ignores unrecognised codes.
+//
+// The scan is here rather than through `vtparse.osc_code` because the
+// payload lives in the handle array the `parser_osc_payload_*`
+// accessors read, not in a `[u8]`, and because this rule keeps the
+// prefix when it is not digits followed by a semicolon.
 fn osc_accum_finalise(p: Parser) [io, ffi]
     let n = array_i64_get_h(p.osc, 2)
     // Parse the leading digits as the OSC code.
@@ -306,7 +309,7 @@ fn osc_accum_finalise(p: Parser) [io, ffi]
     var has_digit = false
     var scanning = true
     while scanning and i < n
-        let b = array_i64_get_h(p.osc, 3 + i)
+        let b = array_i64_get_h(p.osc, 4 + i)
         if b >= 48 and b <= 57
             code = code * 10 + (b - 48)
             has_digit = true
@@ -316,7 +319,7 @@ fn osc_accum_finalise(p: Parser) [io, ffi]
     if has_digit
         array_i64_set_h(p.osc, 1, code)
     // Skip the ';' separator if present.
-    let skip = if i < n and array_i64_get_h(p.osc, 3 + i) == 59
+    let skip = if i < n and array_i64_get_h(p.osc, 4 + i) == 59
         i + 1
     else
         i
@@ -324,8 +327,8 @@ fn osc_accum_finalise(p: Parser) [io, ffi]
     let new_len = n - skip
     var j = 0
     while j < new_len
-        let b = array_i64_get_h(p.osc, 3 + skip + j)
-        array_i64_set_h(p.osc, 3 + j, b)
+        let b = array_i64_get_h(p.osc, 4 + skip + j)
+        array_i64_set_h(p.osc, 4 + j, b)
         j = j + 1
     array_i64_set_h(p.osc, 2, new_len)
     array_i64_set_h(p.osc, 0, 1)   // pending
@@ -376,70 +379,34 @@ fn response_append_byte(p: Parser, b: Int) [io, ffi]
         array_i64_set_h(p.response, 1 + n, b)
         array_i64_set_h(p.response, 0, n + 1)
 
-fn response_append_str(p: Parser, s: Str) [io, ffi]
-    let n = str.len(s)
-    var i = 0
-    while i < n
-        response_append_byte(p, str.byte_at(s, i) ?? 0)
-        i = i + 1
-
-// Convenience getters used by tests + the grid renderer.
+// Queue the bytes of an answer the terminal owes its host.  The
+// spelling is `vtquery`'s, because a reply is one of the sequences this
+// package reads, and a terminal that wrote its own copy of `ESC [ ? 62
+// ; 22 c` would be answering in a dialect its own parser did not read.
+fn response_append_reply(p: Parser, r: vtquery.AnsiReply) [io, ffi]
+    for b in vtquery.write_reply([], r)
+        response_append_byte(p, b)
 
 // Which state the machine is in, as one of the `st_*` codes.  A caller
 // that has fed a burst and wants to know whether a sequence is still
-// open compares against `st_ground`.
+// open compares against `st_ground`.  `vtparse` publishes twelve
+// states and this surface names six, so the four CSI states answer
+// `st_csi_param` and the three string states that are consumed without
+// being reported answer `st_dcs_string`.
 pub fn parser_state(p: Parser) -> Int [io, ffi]
-    array_i64_get_h(p.slots, slot_state())
-
-fn parser_param_count(p: Parser) -> Int [io, ffi]
-    array_i64_get_h(p.slots, slot_param_count())
-
-// Read param `i`, defaulting to `default` when the parser only saw
-// an empty position (e.g. CSI ;5H has param 0 missing → default).
-fn parser_param(p: Parser, i: Int, default: Int) -> Int [io, ffi]
-    let count = parser_param_count(p)
-    if i >= count
-        default
-    else
-        let raw = array_i64_get_h(p.slots, slot_params_base() + i)
-        // We sentinel "missing" as -1 inside the slot.
-        if raw < 0
-            default
-        else
-            raw
-
-// ── Internal helpers ───────────────────────────────────────────
-
-fn reset_csi(p: Parser) [io, ffi]
-    array_i64_set_h(p.slots, slot_param_count(), 0)
-    array_i64_set_h(p.slots, slot_current_param(), 0)
-    array_i64_set_h(p.slots, slot_has_current(), 0)
-    array_i64_set_h(p.slots, slot_intermediate(), 0)
-    // Pre-seed param slots with -1 (missing) so parser_param's
-    // default-fallback fires correctly for omitted positions.
-    for i in 0..max_params()
-        array_i64_set_h(p.slots, slot_params_base() + i, -1)
-
-fn set_state(p: Parser, s: Int) [io, ffi]
-    array_i64_set_h(p.slots, slot_state(), s)
-
-fn flush_current_param(p: Parser) [io, ffi]
-    if array_i64_get_h(p.slots, slot_has_current()) == 1
-        let cnt = array_i64_get_h(p.slots, slot_param_count())
-        if cnt < max_params()
-            let cur = array_i64_get_h(p.slots, slot_current_param())
-            array_i64_set_h(p.slots, slot_params_base() + cnt, cur)
-            array_i64_set_h(p.slots, slot_param_count(), cnt + 1)
-        array_i64_set_h(p.slots, slot_current_param(), 0)
-        array_i64_set_h(p.slots, slot_has_current(), 0)
-
-fn open_empty_param_slot(p: Parser) [io, ffi]
-    // For "CSI 1;;3 m" the middle slot is empty; we represent it as
-    // -1 so parser_param falls back to its caller-supplied default.
-    let cnt = array_i64_get_h(p.slots, slot_param_count())
-    if cnt < max_params()
-        array_i64_set_h(p.slots, slot_params_base() + cnt, -1)
-        array_i64_set_h(p.slots, slot_param_count(), cnt + 1)
+    match vtparse.state_of(p.ansi[0])
+        AnsiGround             => st_ground()
+        AnsiEscape             => st_esc()
+        AnsiEscapeIntermediate => st_esc()
+        AnsiCsiEntry           => st_csi_param()
+        AnsiCsiParam           => st_csi_param()
+        AnsiCsiIntermediate    => st_csi_param()
+        AnsiCsiIgnore          => st_csi_param()
+        AnsiOscString          => st_osc_string()
+        AnsiDcsParam           => st_dcs_string()
+        AnsiDcsPassthrough     => st_dcs_string()
+        AnsiIgnoredString      => st_dcs_string()
+        AnsiUtf8Continuation   => st_utf8_cont()
 
 // ── CSI handlers ───────────────────────────────────────────────
 
@@ -447,149 +414,144 @@ fn open_empty_param_slot(p: Parser) [io, ffi]
 // queue; the main loop ships it to the PTY master.  nvim sends this at
 // startup and waits ~1 s for the reply before falling back to slow
 // timeouts.  Primary (`\e[c`) → VT220+colors; secondary (`\e[>c`,
-// intermediate '>') → version.
-fn csi_da(p: Parser, g: Grid) -> Grid [io, ffi]
-    let intm = array_i64_get_h(p.slots, slot_intermediate())
-    if intm == 62
-        // CSI > c — secondary DA.  Format: ESC [ > Pp ; Pv ; Pc c
-        // Pp = terminal type (0 = VT100), Pv = version, Pc = patch.
-        response_append_str(p, str.from_char(27) + "[>0;1;0c")
+// private marker '>') → version.
+fn csi_da(p: Parser, g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
+    if vtparse.private_marker_of(a) == 62
+        // CSI > c — secondary DA: terminal type 0 (VT100), version 1,
+        // patch 0.
+        response_append_reply(p, AnsiSecondaryAttributesReply(0, 1, 0))
     else
         // CSI c — primary DA.  62 = VT220, 22 = ANSI colors; 62;22 tells
         // nvim "modern terminal, use short timeouts".
-        response_append_str(p, str.from_char(27) + "[?62;22c")
+        response_append_reply(p, AnsiDeviceAttributesReply(62, [22]))
     g
 
 // 'n' (0x6E) = DSR — Device Status Report.
 //   `\e[5n` → reply `\e[0n` (terminal OK)
 //   `\e[6n` → reply `\e[<row>;<col>R` (1-indexed cursor pos)
-fn csi_dsr(p: Parser, g: Grid) -> Grid [io, ffi]
-    let mode = parser_param(p, 0, 0)
+fn csi_dsr(p: Parser, g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
+    let mode = vtparse.param_at(a, 0, 0)
     if mode == 5
-        response_append_str(p, str.from_char(27) + "[0n")
+        response_append_reply(p, AnsiDeviceOkReply)
     else if mode == 6
-        let row = grid.grid_cursor_row(g) + 1
-        let col = grid.grid_cursor_col(g) + 1
-        response_append_str(p,
-      str.from_char(27) + "[" + str.from_int(row) + ";"
-            + str.from_int(col) + "R")
+        response_append_reply(p,
+            AnsiCursorPositionReply(grid.grid_cursor_row(g) + 1,
+                                    grid.grid_cursor_col(g) + 1))
     g
 
 // 'r' (0x72) = DECSTBM — set top/bottom margins (scroll region).
 // Params are 1-indexed inclusive.  No params = full grid; first param
 // missing or 1 = top of grid; second omitted = bottom of grid.
-fn csi_set_scroll_region(p: Parser, g: Grid) -> Grid [io, ffi]
-    let top = parser_param(p, 0, 1) - 1
-    let bot = parser_param(p, 1, g.rows) - 1
+fn csi_set_scroll_region(g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
+    let top = vtparse.param_at(a, 0, 1) - 1
+    let bot = vtparse.param_at(a, 1, g.rows) - 1
     grid.grid_set_scroll_region(g, top, bot)
 
 // 'q' (0x71) with SPACE intermediate = DECSCUSR (set cursor style).
 // vim / nvim send this on mode change so the cursor shape mirrors the
 // mode (block normal, bar insert, underline replace).  Without the SP
 // intermediate it's a different, less-used CSI we ignore.
-fn csi_set_cursor_style(p: Parser, g: Grid) -> Grid [io, ffi]
-    let intm = array_i64_get_h(p.slots, slot_intermediate())
-    if intm == 32
+fn csi_set_cursor_style(g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
+    if vtparse.intermediate_at(a, 0) == 32
         // Latch dirty so a re-emitting host (novomux) forwards the new
         // shape this frame — even when the value matches the current one
         // (vim re-asserts block 2 on every return to normal).
         grid.grid_mark_cursor_shape_dirty(
-      grid.grid_set_cursor_shape(g, parser_param(p, 0, 0)))
+      grid.grid_set_cursor_shape(g, vtparse.param_at(a, 0, 0)))
     else
         g
 
-fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io, ffi]
-    flush_current_param(p)
+fn dispatch_csi(p: Parser, g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi]
     // DEC private-mode dispatch — `\e[?Nh` (DECSET) and `\e[?Nl`
-    // (DECRST).  The '?' intermediate (63) was recorded by
-    // feed_csi_param; dispatch_private_mode decides which modes are
-    // acted on and drops the rest.
-    let intermediate = array_i64_get_h(p.slots, slot_intermediate())
-    if intermediate == 63 and (final_byte == 104 or final_byte == 108)
-        dispatch_private_mode(p, g, final_byte == 104)
+    // (DECRST).  `vtparse` keeps the '?' apart from the intermediate
+    // bytes, because `CSI ? 1049 h` and `CSI 1049 h` are different
+    // sequences; dispatch_private_mode decides which modes are acted
+    // on and drops the rest.
+    if vtparse.private_marker_of(a) == 63 and (final_byte == 104 or final_byte == 108)
+        dispatch_private_mode(g, a, final_byte == 104)
     // 'A' (0x41) = CUU — cursor up
     else if final_byte == 65
-        grid.grid_cursor_move(g, 0 - parser_param(p, 0, 1), 0)
+        grid.grid_cursor_move(g, 0 - vtparse.param_at(a, 0, 1), 0)
     // 'B' (0x42) = CUD — cursor down
     else if final_byte == 66
-        grid.grid_cursor_move(g, parser_param(p, 0, 1), 0)
+        grid.grid_cursor_move(g, vtparse.param_at(a, 0, 1), 0)
     // 'C' (0x43) = CUF — cursor forward
     else if final_byte == 67
-        grid.grid_cursor_move(g, 0, parser_param(p, 0, 1))
+        grid.grid_cursor_move(g, 0, vtparse.param_at(a, 0, 1))
     // 'D' (0x44) = CUB — cursor backward
     else if final_byte == 68
-        grid.grid_cursor_move(g, 0, 0 - parser_param(p, 0, 1))
+        grid.grid_cursor_move(g, 0, 0 - vtparse.param_at(a, 0, 1))
     // 'H' (0x48) and 'f' (0x66) = CUP / HVP — absolute set.
     // Params are 1-indexed; convert to 0-indexed for the grid.
     else if final_byte == 72 or final_byte == 102
-        let row = parser_param(p, 0, 1) - 1
-        let col = parser_param(p, 1, 1) - 1
+        let row = vtparse.param_at(a, 0, 1) - 1
+        let col = vtparse.param_at(a, 1, 1) - 1
         grid.grid_cursor_set(g, row, col)
     // 'J' (0x4A) = ED — erase in display
     else if final_byte == 74
-        grid.grid_erase_display(g, parser_param(p, 0, 0))
+        grid.grid_erase_display(g, vtparse.param_at(a, 0, 0))
     // 'K' (0x4B) = EL — erase in line
     else if final_byte == 75
-        grid.grid_erase_line(g, parser_param(p, 0, 0))
+        grid.grid_erase_line(g, vtparse.param_at(a, 0, 0))
     // 'L' (0x4C) = IL — insert N lines (default 1)
     else if final_byte == 76
-        grid.grid_insert_lines(g, parser_param(p, 0, 1))
+        grid.grid_insert_lines(g, vtparse.param_at(a, 0, 1))
     // 'M' (0x4D) = DL — delete N lines (default 1)
     else if final_byte == 77
-        grid.grid_delete_lines(g, parser_param(p, 0, 1))
+        grid.grid_delete_lines(g, vtparse.param_at(a, 0, 1))
     // '@' (0x40) = ICH — insert N blank chars (default 1)
     else if final_byte == 64
-        grid.grid_insert_chars(g, parser_param(p, 0, 1))
+        grid.grid_insert_chars(g, vtparse.param_at(a, 0, 1))
     // 'P' (0x50) = DCH — delete N chars (default 1)
     else if final_byte == 80
-        grid.grid_delete_chars(g, parser_param(p, 0, 1))
+        grid.grid_delete_chars(g, vtparse.param_at(a, 0, 1))
     // 'X' (0x58) = ECH — erase N chars in place (default 1).
     // Pane-aware clear: writes blanks without moving cursor and
     // without extending past the requested count.
     else if final_byte == 88
-        grid.grid_erase_chars(g, parser_param(p, 0, 1))
+        grid.grid_erase_chars(g, vtparse.param_at(a, 0, 1))
     // 'd' (0x64) = VPA — vertical position absolute (1-indexed)
     else if final_byte == 100
-        grid.grid_cursor_set(g, parser_param(p, 0, 1) - 1, g.cursor_col)
+        grid.grid_cursor_set(g, vtparse.param_at(a, 0, 1) - 1, g.cursor_col)
     // 'G' (0x47) = CHA — cursor horizontal absolute (1-indexed)
     else if final_byte == 71
-        grid.grid_cursor_set(g, g.cursor_row, parser_param(p, 0, 1) - 1)
+        grid.grid_cursor_set(g, g.cursor_row, vtparse.param_at(a, 0, 1) - 1)
     // '`' (0x60) = HPA — horizontal position absolute (same as CHA)
     else if final_byte == 96
-        grid.grid_cursor_set(g, g.cursor_row, parser_param(p, 0, 1) - 1)
+        grid.grid_cursor_set(g, g.cursor_row, vtparse.param_at(a, 0, 1) - 1)
     // 'a' (0x61) = HPR — horizontal position relative (right N)
     else if final_byte == 97
-        grid.grid_cursor_move(g, 0, parser_param(p, 0, 1))
+        grid.grid_cursor_move(g, 0, vtparse.param_at(a, 0, 1))
     // 'e' (0x65) = VPR — vertical position relative (down N)
     else if final_byte == 101
-        grid.grid_cursor_move(g, parser_param(p, 0, 1), 0)
+        grid.grid_cursor_move(g, vtparse.param_at(a, 0, 1), 0)
     // 'E' (0x45) = CNL — cursor next line (col=0, row+N)
     else if final_byte == 69
-        grid.grid_cursor_set(g, g.cursor_row + parser_param(p, 0, 1), 0)
+        grid.grid_cursor_set(g, g.cursor_row + vtparse.param_at(a, 0, 1), 0)
     // 'F' (0x46) = CPL — cursor previous line (col=0, row-N)
     else if final_byte == 70
-        grid.grid_cursor_set(g, g.cursor_row - parser_param(p, 0, 1), 0)
+        grid.grid_cursor_set(g, g.cursor_row - vtparse.param_at(a, 0, 1), 0)
     // 'S' (0x53) = SU — scroll up N (default 1)
     else if final_byte == 83
-        grid.grid_scroll_region_up(g, parser_param(p, 0, 1))
+        grid.grid_scroll_region_up(g, vtparse.param_at(a, 0, 1))
     // 'T' (0x54) = SD — scroll down N (default 1)
     else if final_byte == 84
-        grid.grid_scroll_region_down(g, parser_param(p, 0, 1))
+        grid.grid_scroll_region_down(g, vtparse.param_at(a, 0, 1))
     // 'c' (0x63) = DA — Device Attributes query (see csi_da)
     else if final_byte == 99
-        csi_da(p, g)
+        csi_da(p, g, a)
     // 'n' (0x6E) = DSR — Device Status Report (see csi_dsr)
     else if final_byte == 110
-        csi_dsr(p, g)
+        csi_dsr(p, g, a)
     // 'r' (0x72) = DECSTBM — set scroll region (see csi_set_scroll_region)
     else if final_byte == 114
-        csi_set_scroll_region(p, g)
+        csi_set_scroll_region(g, a)
     // 'm' (0x6D) = SGR — set graphic rendition
     else if final_byte == 109
-        dispatch_sgr(p, g)
+        dispatch_sgr(g, a)
     // 'q' (0x71) SP = DECSCUSR — set cursor style (see csi_set_cursor_style)
     else if final_byte == 113
-        csi_set_cursor_style(p, g)
+        csi_set_cursor_style(g, a)
     else
         g
 
@@ -606,8 +568,8 @@ fn dispatch_csi(p: Parser, g: Grid, final_byte: Int) -> Grid [io, ffi]
 // the cursor and `?1047` did not either before xterm 251, while
 // `?1049` is defined as save + switch + clear.  All three take the
 // save+switch+clear path.
-fn dispatch_private_mode(p: Parser, g: Grid, set: Bool) -> Grid [io, ffi]
-    let n = parser_param(p, 0, 0)
+fn dispatch_private_mode(g: Grid, a: vtcore.AnsiParser, set: Bool) -> Grid [io, ffi]
+    let n = vtparse.param_at(a, 0, 0)
     if n == 47 or n == 1047 or n == 1049
         if set
             grid.grid_enter_alt_screen(g)
@@ -669,75 +631,73 @@ fn dispatch_private_mode(p: Parser, g: Grid, set: Bool) -> Grid [io, ffi]
     else
         g
 
-fn dispatch_sgr(p: Parser, g: Grid) -> Grid [io, ffi]
-    // Walk params; each interpreted independently EXCEPT the
-    // 38/48 compound forms which consume trailing params:
-    //   38;5;N         — 256-color fg, eats 2 extra params
-    //   38;2;R;G;B     — truecolor fg, eats 4 extra params
-    //   48;5;N / 48;2;R;G;B — same shape for bg
-    // Without this skip the trailing R;G;B values land on
-    // 30..37 / 40..47 accidentally and set the wrong color.
-    // Both forms are stored at full 24-bit fidelity; nothing is
-    // quantised on the way into a cell.
-    let count = parser_param_count(p)
+// SGR — walk the parameters, each interpreted independently except
+// 38, 48 and 58, which introduce a colour that spans the parameters
+// after them.  `sgr.read_extended_color` reads both spellings, the
+// semicolon form xterm shipped and the colon form T.416 defines, and
+// says how many parameters the colour took — which is what lets the
+// walk resume in the right place instead of reading a blue channel as
+// a request for italics.
+//
+// An empty parameter list is SGR 0: ECMA-48 §8.3.117 gives SGR the
+// default parameter 0, so `CSI m` is a reset.
+fn dispatch_sgr(g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
+    let count = vtparse.param_count(a)
     if count == 0
         grid.grid_sgr_reset(g)
     else
+        let ps = vtparse.params_of(a)
         var g_acc = g
         var i = 0
         while i < count
-            let v = parser_param(p, i, 0)
-            if v == 38 or v == 48
-                // Sub-form selector lives in the next param.
-                let is_fg = v == 38
-                let mode = parser_param(p, i + 1, 0)
-                if mode == 5 and i + 2 < count
-                    let n = parser_param(p, i + 2, 0)
-                    g_acc = apply_256_color(g_acc, is_fg, n)
-                    i = i + 3
-                else if mode == 2 and i + 4 < count
-                    let r = parser_param(p, i + 2, 0)
-                    let g_ch = parser_param(p, i + 3, 0)
-                    let b = parser_param(p, i + 4, 0)
-                    g_acc = apply_truecolor(g_acc, is_fg, r, g_ch, b)
-                    i = i + 5
-                else
-                    // Malformed — skip just the 38/48 and let the walker
-                    // pick up whatever follows.
-                    i = i + 1
+            let v = vtparse.params_at(ps, i, 0)
+            if v == 38 or v == 48 or v == 58
+                match sgr.read_extended_color(ps, i)
+                    Some(rd) =>
+                        g_acc = apply_extended_color(g_acc, v, rd.color)
+                        i = i + rd.consumed
+                    None     =>
+                        // Truncated or an unknown colour space: skip
+                        // the introducer and read what follows as
+                        // ordinary parameters.
+                        i = i + 1
             else
                 g_acc = apply_sgr_one(g_acc, v)
                 i = i + 1
         g_acc
 
-// Indexed SGR color (`\e[38;5;Nm` / `\e[48;5;Nm`).  N is clamped into
-// 0..255 rather than rejected, because a malformed index should still
-// paint something.
-fn apply_256_color(g: Grid, is_fg: Bool, n: Int) -> Grid [io, ffi]
-    let c = if n < 0
-        0
-    else if n > 255
-        255
+// A colour from 38 (foreground), 48 (background) or 58 (underline).
+//
+// An index is resolved to RGB here, against the C-side session palette,
+// so the cell stores RGB.  The consequence is that a later palette
+// change does not recolour already-painted cells.  Direct colour
+// reaches the cell at its full 24 bits, with no quantisation to the
+// 6x6x6 cube.  58's colour is read and dropped: a cell carries one
+// foreground and one background, and an underline of its own colour is
+// not in the model.
+fn apply_extended_color(g: Grid, introducer: Int, c: sgr.AnsiColor) -> Grid [io, ffi]
+    if introducer == 58
+        g
     else
-        n
-    // Resolve the index to RGB here, against the C-side session
-    // palette, so the cell stores RGB.  The consequence is that a
-    // later palette change does not recolour already-painted cells.
-    let rgb = novo_term_palette_lookup_h(c)
-    if is_fg
-        grid.grid_set_fg(g, rgb)
-    else
-        grid.grid_set_bg(g, rgb)
-
-// ECMA-48 direct color (`\e[38;2;R;G;Bm`): the full 24 bits reach the
-// cell, with no quantisation to the 6×6×6 cube.  Packed as
-// r<<16 | g<<8 | b, each channel masked to 8 bits.
-fn apply_truecolor(g: Grid, is_fg: Bool, r: Int, gc: Int, b: Int) -> Grid
-    let rgb = int.shl(r & 255, 16) | int.shl(gc & 255, 8) | (b & 255)
-    if is_fg
-        grid.grid_set_fg(g, rgb)
-    else
-        grid.grid_set_bg(g, rgb)
+        let is_fg = introducer == 38
+        match c
+            AnsiIndexed(idx)        =>
+                let rgb = novo_term_palette_lookup_h(idx)
+                if is_fg
+                    grid.grid_set_fg(g, rgb)
+                else
+                    grid.grid_set_bg(g, rgb)
+            AnsiTrueColor(r, gc, b) =>
+                let rgb = int.shl(r & 255, 16) | int.shl(gc & 255, 8) | (b & 255)
+                if is_fg
+                    grid.grid_set_fg(g, rgb)
+                else
+                    grid.grid_set_bg(g, rgb)
+            AnsiDefaultColor        =>
+                if is_fg
+                    grid.grid_set_fg(g, novo_term_default_fg_get_h())
+                else
+                    grid.grid_set_bg(g, novo_term_default_bg_get_h())
 
 // Look up an indexed color via the C-side session palette
 // (set at renderer startup with config.config_palette + xterm-
@@ -760,6 +720,11 @@ fn novo_term_default_bg_get_h() -> Int [io, ffi]
 // 24m` after `CSI 1;7m` drops underline and leaves bold and reverse
 // standing.  Only SGR 0 clears the whole mask, and it goes through
 // grid_sgr_reset because it restores the runtime default colours too.
+//
+// `sgr.apply_sgr_one` folds the same parameters onto `sgr.SgrAttrs`,
+// which is a struct of named flags and three `AnsiColor`s.  A cell
+// here is two 64-bit words and a colour is RGB resolved through the
+// session palette, so the fold below is the one this model needs.
 fn apply_sgr_one(g: Grid, v: Int) -> Grid [io, ffi]
     if v == 0
         grid.grid_sgr_reset(g)
@@ -801,169 +766,37 @@ fn apply_sgr_one(g: Grid, v: Int) -> Grid [io, ffi]
     else
         g
 
-// ── Top-level dispatch ─────────────────────────────────────────
+// ── ESC and C0 handlers ────────────────────────────────────────
 
-// Feed one byte through the parser.  Returns the updated Grid;
-// the Parser's mutable state lives in its `slots` array so the
-// caller doesn't need to rebind it.
-pub fn parser_feed_byte(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
-    let st = parser_state(p)
-    if st == st_ground()
-        feed_ground(p, g, b)
-    else if st == st_esc()
-        feed_esc(p, g, b)
-    else if st == st_csi_param()
-        feed_csi_param(p, g, b)
-    else if st == st_osc_string()
-        feed_osc_string(p, g, b)
-    else if st == st_utf8_cont()
-        feed_utf8_cont(p, g, b)
-    else if st == st_dcs_string()
-        feed_dcs_string(p, g, b)
-    else
-        g
-
-// UTF-8 lead-byte detection.
-//
-// 0xxxxxxx → ASCII (1 byte, codepoint = byte).
-// 110xxxxx → 2-byte sequence (lead carries low 5 bits of cp,
-//             1 continuation needed).
-// 1110xxxx → 3-byte sequence (lead carries low 4 bits, 2 conts).
-// 11110xxx → 4-byte sequence (lead carries low 3 bits, 3 conts).
-// 10xxxxxx → orphan continuation byte (drop).
-// 11111xxx → invalid (drop).
-//
-// Continuation bytes (10xxxxxx) carry 6 bits each.  Accumulator
-// holds the running codepoint; we shift-left 6 and OR in the
-// continuation's low 6 bits per byte.
-
-fn utf8_lead_class(b: Int) -> Int
-    // Returns the number of continuation bytes remaining, or -1 for
-    // "not a valid lead byte" (orphan continuation / invalid).
-    if b < 128   // 0xxxxxxx — ASCII
-        0
-    else if b < 192   // 10xxxxxx — orphan cont
-        -1
-    else if b < 224   // 110xxxxx — 2-byte
-        1
-    else if b < 240   // 1110xxxx — 3-byte
-        2
-    else if b < 248   // 11110xxx — 4-byte
-        3
-    else   // 11111xxx — invalid
-        -1
-
-fn utf8_lead_payload(b: Int, n_remaining: Int) -> Int
-    // Low bits of the lead byte that contribute to the codepoint.
-    if n_remaining == 0   // ASCII
-        b
-    else if n_remaining == 1   // 2-byte lead: 5 low bits
-        b - 192
-    else if n_remaining == 2   // 3-byte lead: 4 low bits
-        b - 224
-    else   // 4-byte lead: 3 low bits
-        b - 240
-
-fn feed_ground(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
-    if b == 27   // ESC
-        set_state(p, st_esc())
-        g
-    else if b == 8   // BS
+// A C0 control that acts on its own.  BEL and the rest are dropped:
+// a terminal that rang a bell for every 0x07 in a `cat` of a binary
+// file would be unusable, and the four below are the ones that move
+// the cursor.
+fn execute_c0(g: Grid, c: Int) -> Grid [io, ffi]
+    if c == 8   // BS
         grid.grid_backspace(g)
-    else if b == 9   // HT
+    else if c == 9   // HT
         grid.grid_tab(g)
-    else if b == 10   // LF
+    else if c == 10   // LF
         grid.grid_line_feed(g)
-    else if b == 13   // CR
+    else if c == 13   // CR
         grid.grid_carriage_return(g)
-    else if b == 7   // BEL — ignored
-        g
-    else if b >= 32 and b < 127   // printable ASCII
-        grid.grid_put_char(g, b)
-    else if b >= 128   // possible UTF-8 lead
-        let n_cont = utf8_lead_class(b)
-        if n_cont < 0
-            g   // orphan/invalid — drop
-        else if n_cont == 0
-            g   // (unreachable: b < 128 above)
-        else
-            array_i64_set_h(p.slots, slot_utf8_acc(), utf8_lead_payload(b, n_cont))
-            array_i64_set_h(p.slots, slot_utf8_remaining(), n_cont)
-            set_state(p, st_utf8_cont())
-            g
     else
-        g   // other C0 controls dropped
+        g
 
-// Continuation-byte state.  Each valid continuation (10xxxxxx)
-// contributes 6 bits.  When remaining hits 0, emit the codepoint
-// and return to ground.  An invalid continuation aborts the
-// sequence (drop accumulated bytes) and re-feeds the new byte
-// from ground state — typical xterm-style recovery.
-fn feed_utf8_cont(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
-    if b < 128 or b >= 192   // not a continuation byte
-        // Abort the partial sequence + re-process the byte from
-        // ground.  The accumulator's contents are discarded.
-        set_state(p, st_ground())
-        parser_feed_byte(p, g, b)
-    else
-        let acc = array_i64_get_h(p.slots, slot_utf8_acc())
-        let new_acc = int.shl(acc, 6) + (b - 128)
-        let remaining = array_i64_get_h(p.slots, slot_utf8_remaining()) - 1
-        if remaining == 0
-            set_state(p, st_ground())
-            grid.grid_put_char(g, new_acc)
-        else
-            array_i64_set_h(p.slots, slot_utf8_acc(), new_acc)
-            array_i64_set_h(p.slots, slot_utf8_remaining(), remaining)
-            g
-
-fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
-    if b == 91   // '['
-        reset_csi(p)
-        set_state(p, st_csi_param())
+// ESC <intermediates> <final>.
+//
+// A sequence with an intermediate byte is a charset designator —
+// `ESC ( B` and its neighbours — and output here is always ASCII /
+// UTF-8, so the designator is consumed and nothing changes.
+fn dispatch_esc(g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi]
+    if vtparse.intermediate_count(a) > 0
         g
-    else if b == 93   // ']'
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 0)
-        osc_accum_reset(p)
-        set_state(p, st_osc_string())
-        g
-    // ESC P — DCS (Device Control String) introducer.  Consume the
-    // payload until BEL (0x07) or ST (ESC \) without interpreting
-    // it.  nvim sends DCS for terminfo capability queries on
-    // startup (DECRQSS / XTGETTCAP) — dropping them silently like
-    // OSC keeps the payload bytes from leaking through as printable
-    // text + parasitic CSI parses.  Pre-fix users saw stray `[N0!`
-    // / random fragments + missing lines from the queries getting
-    // re-interpreted in ground state.
-    else if b == 80   // 'P' — DCS
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 0)
-        set_state(p, st_dcs_string())
-        g
-    // ESC X — SOS (Start Of String), ESC ^ — PM (Privacy Message),
-    // ESC _ — APC (Application Program Command).  All three are
-    // ST-terminated string sequences with the same shape as DCS;
-    // reuse the same consumer so unknown ones drop silently
-    // instead of leaking payload bytes.
-    else if b == 88 or b == 94 or b == 95   // 'X' / '^' / '_'
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 0)
-        set_state(p, st_dcs_string())
-        g
-    else if b == 40   // '(' — designate G0
-        // Consume the next byte too.  Cheap hack: stash a marker in
-        // the intermediate slot and stay in ESC state for one more
-        // byte.  Implemented as a tiny inline state.
-        array_i64_set_h(p.slots, slot_intermediate(), 40)
-        g
-    else if array_i64_get_h(p.slots, slot_intermediate()) == 40
-        // Charset byte after ESC ( — consumed and ignored.
-        array_i64_set_h(p.slots, slot_intermediate(), 0)
-        set_state(p, st_ground())
-        g
-    else if b == 55   // ESC 7 — DECSC
-        set_state(p, st_ground())
+    // ESC 7 — DECSC: save cursor, colours and attributes.
+    else if final_byte == 55
         grid.grid_decsc(g)
-    else if b == 56   // ESC 8 — DECRC
-        set_state(p, st_ground())
+    // ESC 8 — DECRC: restore what DECSC saved.
+    else if final_byte == 56
         grid.grid_decrc(g)
     // ESC D — IND (index): cursor down one line; if already at
     // the bottom of the scroll region, scroll the region up so
@@ -972,8 +805,7 @@ fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
     // of using CSI B + CSI S — dropping it left nvim's redraw
     // landing the new line on the OLD row, producing the user-
     // visible "line below appears at cursor row" duplication.
-    else if b == 68   // 'D' — IND
-        set_state(p, st_ground())
+    else if final_byte == 68
         let bot = grid.grid_region_bottom(g)
         if g.cursor_row >= bot
             grid.grid_scroll_region_up(g, 1)
@@ -982,8 +814,7 @@ fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
     // ESC E — NEL (next line): CR + LF.  Move cursor to column 0
     // and down one line, scrolling if needed.  Same scroll-aware
     // semantics as IND.
-    else if b == 69   // 'E' — NEL
-        set_state(p, st_ground())
+    else if final_byte == 69
         let bot = grid.grid_region_bottom(g)
         let g2 = if g.cursor_row >= bot
             grid.grid_scroll_region_up(g, 1)
@@ -994,8 +825,7 @@ fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
     // at the TOP of the scroll region, scroll the region DOWN so
     // the cursor stays at the top edge.  nvim emits this on
     // reverse scroll (Ctrl+Y / cursor up at top).
-    else if b == 77   // 'M' — RI
-        set_state(p, st_ground())
+    else if final_byte == 77
         let top = grid.grid_region_top(g)
         if g.cursor_row <= top
             grid.grid_scroll_region_down(g, 1)
@@ -1003,84 +833,55 @@ fn feed_esc(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
             grid.grid_cursor_set(g, g.cursor_row - 1, g.cursor_col)
     else
         // ESC = (DECPAM), ESC > (DECPNM), ESC c (RIS — full reset)
-        // and every other ESC final: dropped.  Return to ground so the
-        // following byte is read as text rather than as a continuation.
-        set_state(p, st_ground())
+        // and every other ESC final: dropped.
         g
 
-fn feed_csi_param(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
-    if b >= 48 and b <= 57   // digit
-        let cur = array_i64_get_h(p.slots, slot_current_param())
-        array_i64_set_h(p.slots, slot_current_param(), cur * 10 + (b - 48))
-        array_i64_set_h(p.slots, slot_has_current(), 1)
-        g
-    else if b == 59   // ';' — param separator
-        if array_i64_get_h(p.slots, slot_has_current()) == 1
-            flush_current_param(p)
-        else
-            open_empty_param_slot(p)
-        g
-    else if b == 63 or b == 60 or b == 61 or b == 62
-        // Intermediates '?' '<' '=' '>' — record once, keep going.
-        array_i64_set_h(p.slots, slot_intermediate(), b)
-        g
-    else if b == 32
-        // Space — intermediate for DECSCUSR (`CSI Ps SP q`) and a
-        // few other "extended" CSI shapes (DECSCL etc.).  Record
-        // so dispatch_csi can branch on it at the final byte.
-        array_i64_set_h(p.slots, slot_intermediate(), b)
-        g
-    else if b >= 64 and b <= 126   // final byte — dispatch
-        let g2 = dispatch_csi(p, g, b)
-        set_state(p, st_ground())
-        g2
-    else
-        g
+// ── Top-level dispatch ─────────────────────────────────────────
 
-fn feed_osc_string(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
-    // OSC payload runs until BEL (0x07) or ST (ESC \).  Payload bytes
-    // accumulate and are finalised on the terminator, so the caller's
-    // pump can dispatch OSC 0/1/2 (window title) to the window system.
-    // Unknown OSC codes accumulate too and are the caller's to drop —
-    // this module never interprets an OSC payload itself.
-    if b == 7
-        osc_accum_finalise(p)
-        set_state(p, st_ground())
-        g
-    else if b == 27   // ESC — wait for '\'
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 1)
-        g
-    else if array_i64_get_h(p.slots, slot_osc_saw_esc()) == 1 and b == 92
-        // ESC \ — String Terminator
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 0)
-        osc_accum_finalise(p)
-        set_state(p, st_ground())
-        g
-    else
-        // A regular payload byte.  Clear the saw-ESC flag (in case
-        // a stray ESC was followed by a non-'\' byte — xterm
-        // semantics drop the ESC and continue) and accumulate.
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 0)
-        osc_accum_append(p, b)
-        g
+// Feed one byte through the parser.  Returns the updated Grid;
+// the Parser's state machine lives in its `ansi` field so the
+// caller doesn't need to rebind it.
+pub fn parser_feed_byte(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
+    // `a` is the parser the byte was fed to.  It is named because the
+    // buffer is read by copy, and the action, the parameters and the
+    // stored state are all the same parser.
+    let a = vtparse.feed(p.ansi[0], b)
+    p.ansi[0] = a
+    apply_action(p, g, a, vtparse.action_of(a))
 
-// DCS / SOS / PM / APC consumer.  Same terminator handling as
-// feed_osc_string (BEL or ESC \), same slot reused for the
-// "saw an intermediate ESC" flag.  Payload is dropped — we
-// don't implement sixel, ReGIS, terminfo-query replies, or
-// the other consumers; the goal is just to NOT let payload
-// bytes leak through to ground state.
-fn feed_dcs_string(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
-    if b == 7
-        set_state(p, st_ground())
-        g
-    else if b == 27
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 1)
-        g
-    else if array_i64_get_h(p.slots, slot_osc_saw_esc()) == 1 and b == 92
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 0)
-        set_state(p, st_ground())
-        g
-    else
-        array_i64_set_h(p.slots, slot_osc_saw_esc(), 0)
-        g
+// What one action does to the grid.
+//
+// The parameters of a dispatch are on `a`, the parser the byte was fed
+// to, which is why it is threaded here rather than read off the field a
+// second time.  A refusal — a broken limit, or bytes that are not UTF-8
+// — drops the sequence and leaves the screen alone, which is what keeps
+// one bad byte from wedging a terminal.  The one refusal that outlives
+// its byte is an OSC payload past its ceiling: the string ends normally
+// afterwards, so the refusal is recorded and read again at the end.
+fn apply_action(p: Parser, g: Grid, a: vtcore.AnsiParser,
+                act: vtparse.AnsiAction) -> Grid [io, ffi]
+    match act
+        AnsiNothing        => g
+        AnsiPrint(ch)      => grid.grid_put_char(g, ch)
+        AnsiExecute(c)     => execute_c0(g, c)
+        AnsiEscDispatch(f) => dispatch_esc(g, a, f)
+        AnsiCsiDispatch(f) => dispatch_csi(p, g, a, f)
+        AnsiOscStart       =>
+            osc_accum_reset(p)
+            g
+        AnsiOscPut(byte)   =>
+            osc_accum_append(p, byte)
+            g
+        AnsiOscEnd(_)      =>
+            if osc_accum_refused(p)
+                osc_accum_reset(p)
+            else
+                osc_accum_finalise(p)
+            g
+        AnsiDcsStart(_)    => g
+        AnsiDcsPut(_)      => g
+        AnsiDcsEnd(_)      => g
+        AnsiRefused(why)   =>
+            if osc_too_long(why)
+                osc_accum_refuse(p)
+            g

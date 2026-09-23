@@ -1198,6 +1198,34 @@ fn test_osc_is_parsed_and_handed_to_the_caller() [io]
     parser.parser_drop(p)
     grid.grid_drop(g2)
 
+// An OSC payload past the 8192-byte cap is dropped whole.  The parser
+// refuses the byte that passes the cap and consumes the rest of the
+// payload, and the string still ends at its terminator, so a window
+// title or a clipboard write that is too long has no effect rather
+// than a truncated one.
+@test
+fn test_an_oversized_osc_payload_is_dropped_whole() [io]
+    let p = parser.parser_new()
+    let g0 = grid.grid_new(2, 8)
+    // `OSC 0 ;` and 8320 payload bytes, 128 over the cap.
+    var payload = "0;"
+    var i = 0
+    while i < 520
+        payload = payload + "xxxxxxxxxxxxxxxx"
+        i = i + 1
+    let g1 = feed_str(p, g0, esc() + "]" + payload + str.from_char(7))
+    test.assert_eq(parser.parser_osc_pending(p), false)
+    // The terminator was read as a terminator, so the machine is back
+    // in the ground state and the next sequence is read as one.
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    let g2 = feed_str(p, g1, esc() + "]0;hi" + str.from_char(7))
+    test.assert_eq(parser.parser_osc_pending(p), true)
+    test.assert_eq(parser.parser_osc_code(p), 0)
+    test.assert_eq(parser.parser_osc_payload_len(p), 2)
+    parser.parser_osc_clear(p)
+    parser.parser_drop(p)
+    grid.grid_drop(g2)
+
 // Device queries are answered by the terminal, so the parser queues
 // reply bytes and the caller's pump drains them back to the pty.  A
 // pump that never drains leaves an application waiting forever.

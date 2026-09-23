@@ -1,6 +1,6 @@
 [package]
 name        = "novo-vte"
-version     = "0.2.3"
+version     = "0.3.0"
 description = "Shared xterm / VT escape-sequence parser + grid model — extracted from orbit/novoterm so orbit/novomux can consume the exact same parser implementation.  Eliminates the 'novomux running inside novoterm renders differently than novomux running inside xterm' class of conformance bug."
 license     = "Apache-2.0"
 stability   = "beta"
@@ -12,5 +12,17 @@ maintainers = ["novo-lang"]
 main        = "src/main.nv"
 
 [dependencies]
-# Pure-Novo library — parser.nv + grid.nv depend only on
-# std.array via @ffi re-declarations.  No external Orbit deps.
+# ansi-nv is the escape-sequence state machine.  parser.nv used to
+# carry its own copy of it; the two copies were the same machine, and
+# two copies of one machine is how `novomux` inside `novoterm` comes to
+# render differently from `novomux` inside xterm — the class of bug
+# this package was extracted to end.  `core`, so the layer rule holds,
+# and the grid model beside it stays novo-vte's own: ansi-nv answers
+# what a byte said and this package decides what the screen does about
+# it.
+#
+# 0.2.0 or newer: the parser is a value there, and this package holds
+# it between bytes rather than writing it into an array and reading it
+# back.  `novo.lock` is written by `novo pkg build` against whichever
+# release in that range the registry serves.
+ansi-nv = "^0.2.0"
