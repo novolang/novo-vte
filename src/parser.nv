@@ -156,7 +156,7 @@ pub struct Parser
     // of a flat buffer on this toolchain (novo bug
     // types-values/module-qualified-value-type-refused-as-a-value-field);
     // the `use vtcore` line above is what makes the bare name resolve.
-    ansi: [AnsiParser]
+    var ansi: [AnsiParser]
     // Side-array for response bytes queued in answer to host
     // probes (DA, CPR, DSR).  Slot 0
     // holds the count; slots 1..64 hold up to 64 reply bytes.  A
@@ -841,7 +841,7 @@ fn dispatch_esc(g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi
 // Feed one byte through the parser.  Returns the updated Grid;
 // the Parser's state machine lives in its `ansi` field so the
 // caller doesn't need to rebind it.
-pub fn parser_feed_byte(p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
+pub fn parser_feed_byte(var p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
     // `a` is the parser the byte was fed to.  It is named because the
     // buffer is read by copy, and the action, the parameters and the
     // stored state are all the same parser.

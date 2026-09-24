@@ -633,7 +633,7 @@ fn clamp(v: Int, lo: Int, hi: Int) -> Int
 // Move the cursor to (row, col), clamped into the grid.  0-indexed,
 // unlike the CUP escape sequence it backs, which counts from 1.  Clears
 // any pending right-margin wrap, as every explicit cursor move does.
-pub fn grid_cursor_set(g: Grid, row: Int, col: Int) -> Grid [io, ffi]
+pub fn grid_cursor_set(var g: Grid, row: Int, col: Int) -> Grid [io, ffi]
     // Deferred wrap: any explicit cursor positioning clears the
     // right-margin pending-wrap flag.  Otherwise the
     // saved wrap state would fire on the next print after a CUP
@@ -649,13 +649,13 @@ fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io, ffi]
 // fg/bg take 24-bit RGB, never a palette index: the parser resolves
 // SGR 30..37 / 90..97 through novo_term_palette_lookup before calling
 // these, so a live palette change affects only cells written after it.
-pub fn grid_set_fg(g: Grid, fg_rgb: Int) -> Grid
+pub fn grid_set_fg(var g: Grid, fg_rgb: Int) -> Grid
     g.fg = fg_rgb & 16777215
     g
 
 // Set the background every following `grid_put_char` writes, as 24-bit
 // RGB.  See `grid_set_fg` for why this is never a palette index.
-pub fn grid_set_bg(g: Grid, bg_rgb: Int) -> Grid
+pub fn grid_set_bg(var g: Grid, bg_rgb: Int) -> Grid
     g.bg = bg_rgb & 16777215
     g
 
@@ -663,17 +663,17 @@ pub fn grid_set_bg(g: Grid, bg_rgb: Int) -> Grid
 // reset, and a test pinning an exact mask.  An SGR that names one
 // rendition must use grid_add_attr / grid_clear_attr instead — using
 // this one is what made `CSI 1;4m` render underline without bold.
-pub fn grid_set_attrs(g: Grid, attrs: Int) -> Grid
+pub fn grid_set_attrs(var g: Grid, attrs: Int) -> Grid
     g.attrs = attrs & 255
     g
 
 // Turn one attribute bit ON, leaving the rest of the mask alone.
-pub fn grid_add_attr(g: Grid, bit: Int) -> Grid
+pub fn grid_add_attr(var g: Grid, bit: Int) -> Grid
     g.attrs = (g.attrs | bit) & 255
     g
 
 // Turn one attribute bit OFF, leaving the rest of the mask alone.
-pub fn grid_clear_attr(g: Grid, bit: Int) -> Grid
+pub fn grid_clear_attr(var g: Grid, bit: Int) -> Grid
     g.attrs = g.attrs & (~bit & 255)
     g
 
@@ -689,7 +689,7 @@ fn _td_bg_get_h() -> Int [io, ffi]
 
 // SGR 0: put the colours back to the session defaults and clear the
 // whole attribute mask.  Cells already written keep what they carry.
-pub fn grid_sgr_reset(g: Grid) -> Grid [io, ffi]
+pub fn grid_sgr_reset(var g: Grid) -> Grid [io, ffi]
     g.fg = _td_fg_get_h()
     g.bg = _td_bg_get_h()
     g.attrs = 0
@@ -1306,7 +1306,7 @@ pub fn grid_decsc(g: Grid) -> Grid [io, ffi]
     g
 
 // Restore cursor + SGR from meta slots 3..7.  No buffer toggle.
-pub fn grid_decrc(g: Grid) -> Grid [io, ffi]
+pub fn grid_decrc(var g: Grid) -> Grid [io, ffi]
     let r = array_i64_get_h(g.alt_meta, 3)
     let c = array_i64_get_h(g.alt_meta, 4)
     let fg = array_i64_get_h(g.alt_meta, 5)
@@ -1338,7 +1338,7 @@ fn alloc_alt_buf(g: Grid) -> Int [io, ffi]
 // to the alt buffer (lazy-allocate on first call), clears the
 // alt buffer, and moves cursor to (0, 0) with SGR reset.
 // Idempotent: re-entering when already in alt is a no-op clear.
-pub fn grid_enter_alt_screen(g: Grid) -> Grid [io, ffi]
+pub fn grid_enter_alt_screen(var g: Grid) -> Grid [io, ffi]
     let using_alt = array_i64_get_h(g.alt_meta, 2)
     if using_alt == 1
         // Already in alt — treat as a fresh enter: clear + reset
@@ -1403,7 +1403,7 @@ pub fn grid_enter_alt_screen(g: Grid) -> Grid [io, ffi]
 // primary handle stashed in meta[0], restores saved cursor +
 // SGR.  No-op if we're already in primary mode (defensive — the
 // terminal may legitimately receive duplicate ?1049l).
-pub fn grid_exit_alt_screen(g: Grid) -> Grid [io, ffi]
+pub fn grid_exit_alt_screen(var g: Grid) -> Grid [io, ffi]
     let using_alt = array_i64_get_h(g.alt_meta, 2)
     if using_alt != 1
         g
