@@ -4,6 +4,14 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.3.1 — 2026-09-26
+
+The functions that build a list or a buffer in place declare the name
+they write through `var`, and a value a caller keeps is copied where
+it is handed on, as toolchain 0.11 requires of a list born under
+`let`.  On 0.10.0 the markers change nothing.  No function's answer
+changed.
+
 ## Unreleased
 
 - **The escape-sequence parser is `ansi-nv`'s.**  `src/parser.nv` no
