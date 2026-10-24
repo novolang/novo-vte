@@ -27,19 +27,19 @@ fn palette_lookup_h(idx: Int) -> Int [io, ffi]
 // Helper: feed each byte of `s` through the parser, return the
 // final Grid.  Reads stay on the same row throughout — these
 // tests favor short fixed-size grids for easy assertion.
-fn feed_str(p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi]
+fn feed_str(var p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi]
     let n = str.len(s)
     var g_acc = g
     for i in 0..n
         let b = str.byte_at(s, i) ?? 0
-        g_acc = parser.parser_feed_byte(p, g_acc, b)
+        g_acc = parser.parser_feed_byte(var p, var g_acc, b)
     g_acc
 
 @test
 fn test_printable_routes_to_put_char() [io]
     let g0 = grid.grid_new(2, 5)
-    let p = parser.parser_new()
-    let g1 = feed_str(p, g0, "Hi!")
+    var p = parser.parser_new()
+    let g1 = feed_str(var p, g0, "Hi!")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 72)   // H
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 1)), 105)   // i
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 2)), 33)   // !
@@ -50,8 +50,8 @@ fn test_printable_routes_to_put_char() [io]
 @test
 fn test_lf_and_cr_navigate_rows() [io]
     let g0 = grid.grid_new(3, 4)
-    let p = parser.parser_new()
-    let g1 = feed_str(p, g0, "A\nB\nC")
+    var p = parser.parser_new()
+    let g1 = feed_str(var p, g0, "A\nB\nC")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 65)
     // LF moves down without resetting column → 'B' lands at col 1
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 1, 1)), 66)
@@ -62,9 +62,9 @@ fn test_lf_and_cr_navigate_rows() [io]
 @test
 fn test_csi_cup_absolute_cursor() [io]
     let g0 = grid.grid_new(5, 10)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // ESC [ 3 ; 5 H  → cursor to row 3, col 5 (1-indexed)
-    let g1 = feed_str(p, g0, str.from_char(27) + "[3;5HX")
+    let g1 = feed_str(var p, g0, str.from_char(27) + "[3;5HX")
     // X should land at (2, 4) zero-indexed.
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 2, 4)), 88)
     test.assert_eq(grid.grid_cursor_row(g1), 2)
@@ -75,9 +75,9 @@ fn test_csi_cup_absolute_cursor() [io]
 @test
 fn test_csi_cuf_default_param_is_1() [io]
     let g0 = grid.grid_new(2, 8)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // ESC [ C — CUF with no param defaults to 1
-    let g1 = feed_str(p, g0, "A" + str.from_char(27) + "[CB")
+    let g1 = feed_str(var p, g0, "A" + str.from_char(27) + "[CB")
     // 'A' at (0,0); cursor → (0,1); CUF +1 → (0,2); 'B' at (0,2)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 65)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 2)), 66)
@@ -87,9 +87,9 @@ fn test_csi_cuf_default_param_is_1() [io]
 @test
 fn test_csi_cub_with_param() [io]
     let g0 = grid.grid_new(2, 8)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // 'ABC' then ESC [ 2 D (back 2) then 'X' — overwrites 'B'
-    let g1 = feed_str(p, g0, "ABC" + str.from_char(27) + "[2DX")
+    let g1 = feed_str(var p, g0, "ABC" + str.from_char(27) + "[2DX")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 1)), 88)
     parser.parser_drop(p)
     grid.grid_drop(g1)
@@ -97,8 +97,8 @@ fn test_csi_cub_with_param() [io]
 @test
 fn test_csi_ed_mode_2_clears_display() [io]
     let g0 = grid.grid_new(2, 4)
-    let p = parser.parser_new()
-    let g1 = feed_str(p, g0, "AB\nCD" + str.from_char(27) + "[2J")
+    var p = parser.parser_new()
+    let g1 = feed_str(var p, g0, "AB\nCD" + str.from_char(27) + "[2J")
     var blanks = 0
     for r in 0..2
         for c in 0..4
@@ -111,10 +111,10 @@ fn test_csi_ed_mode_2_clears_display() [io]
 @test
 fn test_csi_el_mode_0_from_cursor() [io]
     let g0 = grid.grid_new(1, 5)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // 'XXXX' (cursor at col 4) then ESC [ 2 D (back 2 → col 2)
     // then ESC [ K (EL mode 0: from cursor to end)
-    let g1 = feed_str(p, g0, "XXXX" + str.from_char(27) + "[2D" + str.from_char(27) + "[K")
+    let g1 = feed_str(var p, g0, "XXXX" + str.from_char(27) + "[2D" + str.from_char(27) + "[K")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 88)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 1)), 88)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 2)), 32)
@@ -125,13 +125,13 @@ fn test_csi_el_mode_0_from_cursor() [io]
 @test
 fn test_csi_sgr_fg_colors_each_apply() [io]
     let g0 = grid.grid_new(1, 6)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // Red 'R', then green 'G', then default 'D'
     let esc = str.from_char(27)
     let s1 = esc + "[31mR"
     let s2 = esc + "[32mG"
     let s3 = esc + "[0mD"
-    let g1 = feed_str(p, g0, s1 + s2 + s3)
+    let g1 = feed_str(var p, g0, s1 + s2 + s3)
     // Cells hold 24-bit RGB and the parser resolves SGR 30-37 through
     // novo_term_palette_lookup.  Assert through the SAME lookup rather
     // than a hex literal, so the test tracks the palette instead of
@@ -148,9 +148,9 @@ fn test_csi_sgr_fg_colors_each_apply() [io]
 @test
 fn test_csi_sgr_multi_param_in_one_sequence() [io]
     let g0 = grid.grid_new(1, 3)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // ESC [ 1 ; 33 m — bold + yellow fg
-    let g1 = feed_str(p, g0, str.from_char(27) + "[1;33mB")
+    let g1 = feed_str(var p, g0, str.from_char(27) + "[1;33mB")
     let cell = grid.grid_get(g1, 0, 0)
     test.assert_eq(grid.cell_glyph(cell), 66)
     test.assert_eq(grid.cell_fg(cell), palette_lookup_h(3))
@@ -161,10 +161,10 @@ fn test_csi_sgr_multi_param_in_one_sequence() [io]
 @test
 fn test_osc_string_is_consumed_silently() [io]
     let g0 = grid.grid_new(1, 5)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // ESC ] 0 ; foo BEL  then "AB"
     let osc = str.from_char(27) + "]0;foo" + str.from_char(7)
-    let g1 = feed_str(p, g0, osc + "AB")
+    let g1 = feed_str(var p, g0, osc + "AB")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 65)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 1)), 66)
     test.assert_eq(grid.grid_cursor_col(g1), 2)
@@ -175,10 +175,10 @@ fn test_osc_string_is_consumed_silently() [io]
 @test
 fn test_csi_with_dec_private_intermediate_doesnt_dispatch_basic() [io]
     let g0 = grid.grid_new(2, 3)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // ESC [ ? 25 l — hide cursor (we don't implement it; just
     // verify the parser returns to ground without writing junk)
-    let g1 = feed_str(p, g0, str.from_char(27) + "[?25lA")
+    let g1 = feed_str(var p, g0, str.from_char(27) + "[?25lA")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 65)
     test.assert_eq(parser.parser_state(p), 0)
     parser.parser_drop(p)
@@ -187,9 +187,9 @@ fn test_csi_with_dec_private_intermediate_doesnt_dispatch_basic() [io]
 @test
 fn test_charset_designate_consumes_two_bytes() [io]
     let g0 = grid.grid_new(2, 5)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // ESC ( B — designate G0 as ASCII (no-op for us); then 'X'
-    let g1 = feed_str(p, g0, str.from_char(27) + "(BX")
+    let g1 = feed_str(var p, g0, str.from_char(27) + "(BX")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 88)
     test.assert_eq(parser.parser_state(p), 0)
     parser.parser_drop(p)
@@ -198,9 +198,9 @@ fn test_charset_designate_consumes_two_bytes() [io]
 @test
 fn test_csi_dec_priv_1049_alt_screen_round_trip() [io]
     let g0 = grid.grid_new(2, 4)
-    let p = parser.parser_new()
-    let g1 = feed_str(p, g0, "AB")
-    let g2 = feed_str(p, g1, str.from_char(27) + "[?1049hZ"
+    var p = parser.parser_new()
+    let g1 = feed_str(var p, g0, "AB")
+    let g2 = feed_str(var p, g1, str.from_char(27) + "[?1049hZ"
                               + str.from_char(27) + "[?1049l")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g2, 0, 0)), 65)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g2, 0, 1)), 66)
@@ -213,9 +213,9 @@ fn test_csi_dec_priv_1049_alt_screen_round_trip() [io]
 fn test_csi_ech_erases_in_place() [io]
     // 2-row grid so the writes don't trigger end-of-grid scroll.
     let g0 = grid.grid_new(2, 6)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     // Write "ABCDEF", move cursor to col 1, ECH 3 → "A___EF"
-    let g1 = feed_str(p, g0, "ABCDEF"
+    let g1 = feed_str(var p, g0, "ABCDEF"
                               + str.from_char(27) + "[1;2H"   // CUP (1,2)
                               + str.from_char(27) + "[3X")
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 0, 0)), 65)   // 'A'
@@ -232,8 +232,8 @@ fn test_csi_ech_erases_in_place() [io]
 @test
 fn test_csi_vpa_and_cha_set_axes() [io]
     let g0 = grid.grid_new(5, 5)
-    let p = parser.parser_new()
-    let g1 = feed_str(p, g0, str.from_char(27) + "[3;4H"   // (2, 3)
+    var p = parser.parser_new()
+    let g1 = feed_str(var p, g0, str.from_char(27) + "[3;4H"   // (2, 3)
                               + str.from_char(27) + "[5d"   // row=4
                               + str.from_char(27) + "[2G")   // col=1
     test.assert_eq(grid.grid_cursor_row(g1), 4)
@@ -246,8 +246,8 @@ fn test_csi_vpa_and_cha_set_axes() [io]
 @test
 fn test_esc_7_8_decsc_decrc() [io]
     let g0 = grid.grid_new(3, 4)
-    let p = parser.parser_new()
-    let g1 = feed_str(p, g0, str.from_char(27) + "[2;3H"
+    var p = parser.parser_new()
+    let g1 = feed_str(var p, g0, str.from_char(27) + "[2;3H"
                               + str.from_char(27) + "7"
                               + str.from_char(27) + "[1;1H"
                               + str.from_char(27) + "8X")

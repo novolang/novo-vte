@@ -461,38 +461,38 @@ fn csi_set_cursor_style(g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
     else
         g
 
-fn dispatch_csi(p: Parser, g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi]
+fn dispatch_csi(p: Parser, var g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi]
     // DEC private-mode dispatch — `\e[?Nh` (DECSET) and `\e[?Nl`
     // (DECRST).  `vtparse` keeps the '?' apart from the intermediate
     // bytes, because `CSI ? 1049 h` and `CSI 1049 h` are different
     // sequences; dispatch_private_mode decides which modes are acted
     // on and drops the rest.
     if vtparse.private_marker_of(a) == 63 and (final_byte == 104 or final_byte == 108)
-        dispatch_private_mode(g, a, final_byte == 104)
+        dispatch_private_mode(var g, a, final_byte == 104)
     // 'A' (0x41) = CUU — cursor up
     else if final_byte == 65
-        grid.grid_cursor_move(g, 0 - vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_move(var g, 0 - vtparse.param_at(a, 0, 1), 0)
     // 'B' (0x42) = CUD — cursor down
     else if final_byte == 66
-        grid.grid_cursor_move(g, vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_move(var g, vtparse.param_at(a, 0, 1), 0)
     // 'C' (0x43) = CUF — cursor forward
     else if final_byte == 67
-        grid.grid_cursor_move(g, 0, vtparse.param_at(a, 0, 1))
+        grid.grid_cursor_move(var g, 0, vtparse.param_at(a, 0, 1))
     // 'D' (0x44) = CUB — cursor backward
     else if final_byte == 68
-        grid.grid_cursor_move(g, 0, 0 - vtparse.param_at(a, 0, 1))
+        grid.grid_cursor_move(var g, 0, 0 - vtparse.param_at(a, 0, 1))
     // 'H' (0x48) and 'f' (0x66) = CUP / HVP — absolute set.
     // Params are 1-indexed; convert to 0-indexed for the grid.
     else if final_byte == 72 or final_byte == 102
         let row = vtparse.param_at(a, 0, 1) - 1
         let col = vtparse.param_at(a, 1, 1) - 1
-        grid.grid_cursor_set(g, row, col)
+        grid.grid_cursor_set(var g, row, col)
     // 'J' (0x4A) = ED — erase in display
     else if final_byte == 74
-        grid.grid_erase_display(g, vtparse.param_at(a, 0, 0))
+        grid.grid_erase_display(var g, vtparse.param_at(a, 0, 0))
     // 'K' (0x4B) = EL — erase in line
     else if final_byte == 75
-        grid.grid_erase_line(g, vtparse.param_at(a, 0, 0))
+        grid.grid_erase_line(var g, vtparse.param_at(a, 0, 0))
     // 'L' (0x4C) = IL — insert N lines (default 1)
     else if final_byte == 76
         grid.grid_insert_lines(g, vtparse.param_at(a, 0, 1))
@@ -512,25 +512,25 @@ fn dispatch_csi(p: Parser, g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Gr
         grid.grid_erase_chars(g, vtparse.param_at(a, 0, 1))
     // 'd' (0x64) = VPA — vertical position absolute (1-indexed)
     else if final_byte == 100
-        grid.grid_cursor_set(g, vtparse.param_at(a, 0, 1) - 1, g.cursor_col)
+        grid.grid_cursor_set(var g, vtparse.param_at(a, 0, 1) - 1, g.cursor_col)
     // 'G' (0x47) = CHA — cursor horizontal absolute (1-indexed)
     else if final_byte == 71
-        grid.grid_cursor_set(g, g.cursor_row, vtparse.param_at(a, 0, 1) - 1)
+        grid.grid_cursor_set(var g, g.cursor_row, vtparse.param_at(a, 0, 1) - 1)
     // '`' (0x60) = HPA — horizontal position absolute (same as CHA)
     else if final_byte == 96
-        grid.grid_cursor_set(g, g.cursor_row, vtparse.param_at(a, 0, 1) - 1)
+        grid.grid_cursor_set(var g, g.cursor_row, vtparse.param_at(a, 0, 1) - 1)
     // 'a' (0x61) = HPR — horizontal position relative (right N)
     else if final_byte == 97
-        grid.grid_cursor_move(g, 0, vtparse.param_at(a, 0, 1))
+        grid.grid_cursor_move(var g, 0, vtparse.param_at(a, 0, 1))
     // 'e' (0x65) = VPR — vertical position relative (down N)
     else if final_byte == 101
-        grid.grid_cursor_move(g, vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_move(var g, vtparse.param_at(a, 0, 1), 0)
     // 'E' (0x45) = CNL — cursor next line (col=0, row+N)
     else if final_byte == 69
-        grid.grid_cursor_set(g, g.cursor_row + vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_set(var g, g.cursor_row + vtparse.param_at(a, 0, 1), 0)
     // 'F' (0x46) = CPL — cursor previous line (col=0, row-N)
     else if final_byte == 70
-        grid.grid_cursor_set(g, g.cursor_row - vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_set(var g, g.cursor_row - vtparse.param_at(a, 0, 1), 0)
     // 'S' (0x53) = SU — scroll up N (default 1)
     else if final_byte == 83
         grid.grid_scroll_region_up(g, vtparse.param_at(a, 0, 1))
@@ -548,7 +548,7 @@ fn dispatch_csi(p: Parser, g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Gr
         csi_set_scroll_region(g, a)
     // 'm' (0x6D) = SGR — set graphic rendition
     else if final_byte == 109
-        dispatch_sgr(g, a)
+        dispatch_sgr(var g, a)
     // 'q' (0x71) SP = DECSCUSR — set cursor style (see csi_set_cursor_style)
     else if final_byte == 113
         csi_set_cursor_style(g, a)
@@ -568,13 +568,13 @@ fn dispatch_csi(p: Parser, g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Gr
 // the cursor and `?1047` did not either before xterm 251, while
 // `?1049` is defined as save + switch + clear.  All three take the
 // save+switch+clear path.
-fn dispatch_private_mode(g: Grid, a: vtcore.AnsiParser, set: Bool) -> Grid [io, ffi]
+fn dispatch_private_mode(var g: Grid, a: vtcore.AnsiParser, set: Bool) -> Grid [io, ffi]
     let n = vtparse.param_at(a, 0, 0)
     if n == 47 or n == 1047 or n == 1049
         if set
-            grid.grid_enter_alt_screen(g)
+            grid.grid_enter_alt_screen(var g)
         else
-            grid.grid_exit_alt_screen(g)
+            grid.grid_exit_alt_screen(var g)
     // DECAWM (n=7): auto-wrap mode.  nvim toggles this around line-
     // numbered gutter writes / status-line draws — without honoring
     // it, our cursor lands on the next row instead of pegging at
@@ -641,10 +641,10 @@ fn dispatch_private_mode(g: Grid, a: vtcore.AnsiParser, set: Bool) -> Grid [io, 
 //
 // An empty parameter list is SGR 0: ECMA-48 §8.3.117 gives SGR the
 // default parameter 0, so `CSI m` is a reset.
-fn dispatch_sgr(g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
+fn dispatch_sgr(var g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
     let count = vtparse.param_count(a)
     if count == 0
-        grid.grid_sgr_reset(g)
+        grid.grid_sgr_reset(var g)
     else
         let ps = vtparse.params_of(a)
         var g_acc = g
@@ -654,7 +654,7 @@ fn dispatch_sgr(g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
             if v == 38 or v == 48 or v == 58
                 match sgr.read_extended_color(ps, i)
                     Some(rd) =>
-                        g_acc = apply_extended_color(g_acc, v, rd.color)
+                        g_acc = apply_extended_color(var g_acc, v, rd.color)
                         i = i + rd.consumed
                     None     =>
                         // Truncated or an unknown colour space: skip
@@ -675,7 +675,7 @@ fn dispatch_sgr(g: Grid, a: vtcore.AnsiParser) -> Grid [io, ffi]
 // 6x6x6 cube.  58's colour is read and dropped: a cell carries one
 // foreground and one background, and an underline of its own colour is
 // not in the model.
-fn apply_extended_color(g: Grid, introducer: Int, c: sgr.AnsiColor) -> Grid [io, ffi]
+fn apply_extended_color(var g: Grid, introducer: Int, c: sgr.AnsiColor) -> Grid [io, ffi]
     if introducer == 58
         g
     else
@@ -684,20 +684,20 @@ fn apply_extended_color(g: Grid, introducer: Int, c: sgr.AnsiColor) -> Grid [io,
             AnsiIndexed(idx)        =>
                 let rgb = novo_term_palette_lookup_h(idx)
                 if is_fg
-                    grid.grid_set_fg(g, rgb)
+                    grid.grid_set_fg(var g, rgb)
                 else
-                    grid.grid_set_bg(g, rgb)
+                    grid.grid_set_bg(var g, rgb)
             AnsiTrueColor(r, gc, b) =>
                 let rgb = int.shl(r & 255, 16) | int.shl(gc & 255, 8) | (b & 255)
                 if is_fg
-                    grid.grid_set_fg(g, rgb)
+                    grid.grid_set_fg(var g, rgb)
                 else
-                    grid.grid_set_bg(g, rgb)
+                    grid.grid_set_bg(var g, rgb)
             AnsiDefaultColor        =>
                 if is_fg
-                    grid.grid_set_fg(g, novo_term_default_fg_get_h())
+                    grid.grid_set_fg(var g, novo_term_default_fg_get_h())
                 else
-                    grid.grid_set_bg(g, novo_term_default_bg_get_h())
+                    grid.grid_set_bg(var g, novo_term_default_bg_get_h())
 
 // Look up an indexed color via the C-side session palette
 // (set at renderer startup with config.config_palette + xterm-
@@ -725,44 +725,44 @@ fn novo_term_default_bg_get_h() -> Int [io, ffi]
 // which is a struct of named flags and three `AnsiColor`s.  A cell
 // here is two 64-bit words and a colour is RGB resolved through the
 // session palette, so the fold below is the one this model needs.
-fn apply_sgr_one(g: Grid, v: Int) -> Grid [io, ffi]
+fn apply_sgr_one(var g: Grid, v: Int) -> Grid [io, ffi]
     if v == 0
-        grid.grid_sgr_reset(g)
+        grid.grid_sgr_reset(var g)
     else if v == 1
-        grid.grid_add_attr(g, grid.attr_bold())
+        grid.grid_add_attr(var g, grid.attr_bold())
     else if v == 3
-        grid.grid_add_attr(g, grid.attr_italic())
+        grid.grid_add_attr(var g, grid.attr_italic())
     else if v == 4
-        grid.grid_add_attr(g, grid.attr_underline())
+        grid.grid_add_attr(var g, grid.attr_underline())
     else if v == 7
-        grid.grid_add_attr(g, grid.attr_reverse())
+        grid.grid_add_attr(var g, grid.attr_reverse())
     else if v == 9
-        grid.grid_add_attr(g, grid.attr_strike())
+        grid.grid_add_attr(var g, grid.attr_strike())
     else if v == 22
-        grid.grid_clear_attr(g, grid.attr_bold())
+        grid.grid_clear_attr(var g, grid.attr_bold())
     else if v == 23
-        grid.grid_clear_attr(g, grid.attr_italic())
+        grid.grid_clear_attr(var g, grid.attr_italic())
     else if v == 24
-        grid.grid_clear_attr(g, grid.attr_underline())
+        grid.grid_clear_attr(var g, grid.attr_underline())
     else if v == 27
-        grid.grid_clear_attr(g, grid.attr_reverse())
+        grid.grid_clear_attr(var g, grid.attr_reverse())
     else if v == 29
-        grid.grid_clear_attr(g, grid.attr_strike())
+        grid.grid_clear_attr(var g, grid.attr_strike())
     else if v >= 30 and v <= 37
-        grid.grid_set_fg(g, novo_term_palette_lookup_h(v - 30))
+        grid.grid_set_fg(var g, novo_term_palette_lookup_h(v - 30))
     else if v >= 90 and v <= 97
-        grid.grid_set_fg(g, novo_term_palette_lookup_h(v - 90 + 8))
+        grid.grid_set_fg(var g, novo_term_palette_lookup_h(v - 90 + 8))
     else if v == 39
         // SGR 39: return-to-default fg.  Read the runtime default
         // (mutable via OSC 10) instead of the compile-time constant.
-        grid.grid_set_fg(g, novo_term_default_fg_get_h())
+        grid.grid_set_fg(var g, novo_term_default_fg_get_h())
     else if v >= 40 and v <= 47
-        grid.grid_set_bg(g, novo_term_palette_lookup_h(v - 40))
+        grid.grid_set_bg(var g, novo_term_palette_lookup_h(v - 40))
     else if v >= 100 and v <= 107
-        grid.grid_set_bg(g, novo_term_palette_lookup_h(v - 100 + 8))
+        grid.grid_set_bg(var g, novo_term_palette_lookup_h(v - 100 + 8))
     else if v == 49
         // SGR 49: return-to-default bg.  Same OSC-11-aware lookup.
-        grid.grid_set_bg(g, novo_term_default_bg_get_h())
+        grid.grid_set_bg(var g, novo_term_default_bg_get_h())
     else
         g
 
@@ -772,15 +772,15 @@ fn apply_sgr_one(g: Grid, v: Int) -> Grid [io, ffi]
 // a terminal that rang a bell for every 0x07 in a `cat` of a binary
 // file would be unusable, and the four below are the ones that move
 // the cursor.
-fn execute_c0(g: Grid, c: Int) -> Grid [io, ffi]
+fn execute_c0(var g: Grid, c: Int) -> Grid [io, ffi]
     if c == 8   // BS
-        grid.grid_backspace(g)
+        grid.grid_backspace(var g)
     else if c == 9   // HT
-        grid.grid_tab(g)
+        grid.grid_tab(var g)
     else if c == 10   // LF
-        grid.grid_line_feed(g)
+        grid.grid_line_feed(var g)
     else if c == 13   // CR
-        grid.grid_carriage_return(g)
+        grid.grid_carriage_return(var g)
     else
         g
 
@@ -789,7 +789,7 @@ fn execute_c0(g: Grid, c: Int) -> Grid [io, ffi]
 // A sequence with an intermediate byte is a charset designator —
 // `ESC ( B` and its neighbours — and output here is always ASCII /
 // UTF-8, so the designator is consumed and nothing changes.
-fn dispatch_esc(g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi]
+fn dispatch_esc(var g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi]
     if vtparse.intermediate_count(a) > 0
         g
     // ESC 7 — DECSC: save cursor, colours and attributes.
@@ -797,7 +797,7 @@ fn dispatch_esc(g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi
         grid.grid_decsc(g)
     // ESC 8 — DECRC: restore what DECSC saved.
     else if final_byte == 56
-        grid.grid_decrc(g)
+        grid.grid_decrc(var g)
     // ESC D — IND (index): cursor down one line; if already at
     // the bottom of the scroll region, scroll the region up so
     // the cursor stays at the bottom edge.  nvim emits this when
@@ -810,17 +810,17 @@ fn dispatch_esc(g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi
         if g.cursor_row >= bot
             grid.grid_scroll_region_up(g, 1)
         else
-            grid.grid_cursor_set(g, g.cursor_row + 1, g.cursor_col)
+            grid.grid_cursor_set(var g, g.cursor_row + 1, g.cursor_col)
     // ESC E — NEL (next line): CR + LF.  Move cursor to column 0
     // and down one line, scrolling if needed.  Same scroll-aware
     // semantics as IND.
     else if final_byte == 69
         let bot = grid.grid_region_bottom(g)
-        let g2 = if g.cursor_row >= bot
+        var g2 = if g.cursor_row >= bot
             grid.grid_scroll_region_up(g, 1)
         else
-            grid.grid_cursor_set(g, g.cursor_row + 1, 0)
-        grid.grid_cursor_set(g2, g2.cursor_row, 0)
+            grid.grid_cursor_set(var g, g.cursor_row + 1, 0)
+        grid.grid_cursor_set(var g2, g2.cursor_row, 0)
     // ESC M — RI (reverse index): cursor up one line; if already
     // at the TOP of the scroll region, scroll the region DOWN so
     // the cursor stays at the top edge.  nvim emits this on
@@ -830,7 +830,7 @@ fn dispatch_esc(g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi
         if g.cursor_row <= top
             grid.grid_scroll_region_down(g, 1)
         else
-            grid.grid_cursor_set(g, g.cursor_row - 1, g.cursor_col)
+            grid.grid_cursor_set(var g, g.cursor_row - 1, g.cursor_col)
     else
         // ESC = (DECPAM), ESC > (DECPNM), ESC c (RIS — full reset)
         // and every other ESC final: dropped.
@@ -841,13 +841,13 @@ fn dispatch_esc(g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid [io, ffi
 // Feed one byte through the parser.  Returns the updated Grid;
 // the Parser's state machine lives in its `ansi` field so the
 // caller doesn't need to rebind it.
-pub fn parser_feed_byte(var p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
+pub fn parser_feed_byte(var p: Parser, var g: Grid, b: Int) -> Grid [io, ffi]
     // `a` is the parser the byte was fed to.  It is named because the
     // buffer is read by copy, and the action, the parameters and the
     // stored state are all the same parser.
     let a = vtparse.feed(p.ansi[0], b)
     p.ansi[0] = a
-    apply_action(p, g, a, vtparse.action_of(a))
+    apply_action(p, var g, a, vtparse.action_of(a))
 
 // What one action does to the grid.
 //
@@ -858,14 +858,14 @@ pub fn parser_feed_byte(var p: Parser, g: Grid, b: Int) -> Grid [io, ffi]
 // one bad byte from wedging a terminal.  The one refusal that outlives
 // its byte is an OSC payload past its ceiling: the string ends normally
 // afterwards, so the refusal is recorded and read again at the end.
-fn apply_action(p: Parser, g: Grid, a: vtcore.AnsiParser,
+fn apply_action(p: Parser, var g: Grid, a: vtcore.AnsiParser,
                 act: vtparse.AnsiAction) -> Grid [io, ffi]
     match act
         AnsiNothing        => g
-        AnsiPrint(ch)      => grid.grid_put_char(g, ch)
-        AnsiExecute(c)     => execute_c0(g, c)
-        AnsiEscDispatch(f) => dispatch_esc(g, a, f)
-        AnsiCsiDispatch(f) => dispatch_csi(p, g, a, f)
+        AnsiPrint(ch)      => grid.grid_put_char(var g, ch)
+        AnsiExecute(c)     => execute_c0(var g, c)
+        AnsiEscDispatch(f) => dispatch_esc(var g, a, f)
+        AnsiCsiDispatch(f) => dispatch_csi(p, var g, a, f)
         AnsiOscStart       =>
             osc_accum_reset(p)
             g

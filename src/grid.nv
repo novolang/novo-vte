@@ -643,8 +643,8 @@ pub fn grid_cursor_set(var g: Grid, row: Int, col: Int) -> Grid [io, ffi]
     g.cursor_col = clamp(col, 0, g.cols - 1)
     g
 
-fn grid_cursor_move(g: Grid, dr: Int, dc: Int) -> Grid [io, ffi]
-    grid_cursor_set(g, g.cursor_row + dr, g.cursor_col + dc)
+fn grid_cursor_move(var g: Grid, dr: Int, dc: Int) -> Grid [io, ffi]
+    grid_cursor_set(var g, g.cursor_row + dr, g.cursor_col + dc)
 
 // fg/bg take 24-bit RGB, never a palette index: the parser resolves
 // SGR 30..37 / 90..97 through novo_term_palette_lookup before calling
@@ -766,7 +766,7 @@ pub fn grid_scroll_up(g: Grid) -> Grid [io, ffi]
 // Put a glyph at the cursor, advance the cursor one column.  Wraps to
 // the next row at the right margin; scrolls when the cursor crosses
 // the bottom edge.
-pub fn grid_put_char(g: Grid, glyph: Int) -> Grid [io, ffi]
+pub fn grid_put_char(var g: Grid, glyph: Int) -> Grid [io, ffi]
     // Any POSITIVE codepoint is accepted, including C0 controls: the
     // parser routes real control bytes to the dedicated handlers before
     // reaching here, and the renderer's atlas mapping decides which slot
@@ -797,10 +797,10 @@ pub fn grid_put_char(g: Grid, glyph: Int) -> Grid [io, ffi]
             grid_set_row_wrapped(g, g.cursor_row, 1)
             let bot = grid_region_bottom(g)
             let g_wrap = if g.cursor_row >= bot
-                let gs = grid_scroll_up(g)
-                grid_cursor_set(gs, bot, 0)
+                var gs = grid_scroll_up(g)
+                grid_cursor_set(var gs, bot, 0)
             else
-                grid_cursor_set(g, g.cursor_row + 1, 0)
+                grid_cursor_set(var g, g.cursor_row + 1, 0)
             grid_clear_wrap_pending(g_wrap)
         else
             grid_clear_wrap_pending(g)
@@ -809,23 +809,23 @@ pub fn grid_put_char(g: Grid, glyph: Int) -> Grid [io, ffi]
         // the parser-side palette lookup.
         let w0 = pack_word0(glyph, g0.attrs, g0.fg)
         let w1 = pack_word1(g0.bg)
-        let g2 = grid_set_pair(g0, g0.cursor_row, g0.cursor_col, w0, w1)
+        var g2 = grid_set_pair(g0, g0.cursor_row, g0.cursor_col, w0, w1)
         let next_col = g2.cursor_col + 1
         if next_col >= g.cols
             // DECAWM off: peg at right margin without setting wrap-
             // pending — subsequent writes overwrite this same cell.
             let aw = grid_autowrap(g2)
             if aw == 0
-                grid_cursor_set(g2, g2.cursor_row, g.cols - 1)
+                grid_cursor_set(var g2, g2.cursor_row, g.cols - 1)
             else
                 // DECAWM on: set wrap-pending and keep cursor at cols-1.
                 // The actual row advance happens on the NEXT printable
                 // char (above), matching xterm's deferred-wrap semantics
                 // that nvim relies on.
-                let g_keep = grid_cursor_set(g2, g2.cursor_row, g.cols - 1)
+                let g_keep = grid_cursor_set(var g2, g2.cursor_row, g.cols - 1)
                 grid_set_wrap_pending(g_keep)
         else
-            grid_cursor_set(g2, g2.cursor_row, next_col)
+            grid_cursor_set(var g2, g2.cursor_row, next_col)
 
 // Per-row wrap-flag accessors.  Bounds-checked: a stale row index
 // (after scroll-up shifts) reads as 0 so resize-time reflow doesn't
@@ -1018,41 +1018,41 @@ fn grid_mouse_mode_bit_off(g: Grid, bit: Int) -> Grid [io, ffi]
 // BS — move the cursor one column left, stopping at column 0.  It does
 // not erase: a shell that rubs a character out sends BS, a space and
 // another BS.
-pub fn grid_backspace(g: Grid) -> Grid [io, ffi]
+pub fn grid_backspace(var g: Grid) -> Grid [io, ffi]
     if g.cursor_col > 0
-        grid_cursor_set(g, g.cursor_row, g.cursor_col - 1)
+        grid_cursor_set(var g, g.cursor_row, g.cursor_col - 1)
     else
         g
 
 // Tab to the next 8-column stop, clipped to the right margin.
-pub fn grid_tab(g: Grid) -> Grid [io, ffi]
+pub fn grid_tab(var g: Grid) -> Grid [io, ffi]
     let next = (g.cursor_col / 8 + 1) * 8
     let clipped = if next >= g.cols
         g.cols - 1
     else
         next
-    grid_cursor_set(g, g.cursor_row, clipped)
+    grid_cursor_set(var g, g.cursor_row, clipped)
 
 // CR — move the cursor to column 0 of the row it is on.  The row does
 // not change; a newline is CR followed by LF.
-pub fn grid_carriage_return(g: Grid) -> Grid [io, ffi]
-    grid_cursor_set(g, g.cursor_row, 0)
+pub fn grid_carriage_return(var g: Grid) -> Grid [io, ffi]
+    grid_cursor_set(var g, g.cursor_row, 0)
 
 // Line feed.  Moves the cursor down one row.  If already on the
 // scroll-region bottom row, scrolls (within the region) and
 // stays put.  Does NOT reset the column (matches xterm — CR has
 // to follow if you want column 0).
-pub fn grid_line_feed(g: Grid) -> Grid [io, ffi]
+pub fn grid_line_feed(var g: Grid) -> Grid [io, ffi]
     let bot = grid_region_bottom(g)
     if g.cursor_row >= bot
-        let g2 = grid_scroll_up(g)
-        grid_cursor_set(g2, bot, g.cursor_col)
+        var g2 = grid_scroll_up(g)
+        grid_cursor_set(var g2, bot, g.cursor_col)
     else
-        grid_cursor_set(g, g.cursor_row + 1, g.cursor_col)
+        grid_cursor_set(var g, g.cursor_row + 1, g.cursor_col)
 
 // ── Erase ──────────────────────────────────────────────────────
 
-fn fill_row_range(g: Grid, row: Int, c0: Int, c1: Int) [io, ffi]
+fn fill_row_range(var g: Grid, row: Int, c0: Int, c1: Int) [io, ffi]
     let bw0 = blank_word0()
     let bw1 = blank_word1()
     for c in c0..c1
@@ -1060,29 +1060,29 @@ fn fill_row_range(g: Grid, row: Int, c0: Int, c1: Int) [io, ffi]
 
 // EL — Erase in Line.  mode 0: cursor → end of line.
 // mode 1: start of line → cursor (inclusive).  mode 2: whole line.
-pub fn grid_erase_line(g: Grid, mode: Int) -> Grid [io, ffi]
+pub fn grid_erase_line(var g: Grid, mode: Int) -> Grid [io, ffi]
     if mode == 0
-        fill_row_range(g, g.cursor_row, g.cursor_col, g.cols)
+        fill_row_range(var g, g.cursor_row, g.cursor_col, g.cols)
     if mode == 1
-        fill_row_range(g, g.cursor_row, 0, g.cursor_col + 1)
+        fill_row_range(var g, g.cursor_row, 0, g.cursor_col + 1)
     if mode == 2
-        fill_row_range(g, g.cursor_row, 0, g.cols)
+        fill_row_range(var g, g.cursor_row, 0, g.cols)
     g
 
 // ED — Erase in Display.  mode 0: cursor → end of display.
 // mode 1: start → cursor.  mode 2: whole display.
-pub fn grid_erase_display(g: Grid, mode: Int) -> Grid [io, ffi]
+pub fn grid_erase_display(var g: Grid, mode: Int) -> Grid [io, ffi]
     if mode == 0
-        fill_row_range(g, g.cursor_row, g.cursor_col, g.cols)
+        fill_row_range(var g, g.cursor_row, g.cursor_col, g.cols)
         for r in g.cursor_row + 1..g.rows
-            fill_row_range(g, r, 0, g.cols)
+            fill_row_range(var g, r, 0, g.cols)
     if mode == 1
         for r in 0..g.cursor_row
-            fill_row_range(g, r, 0, g.cols)
-        fill_row_range(g, g.cursor_row, 0, g.cursor_col + 1)
+            fill_row_range(var g, r, 0, g.cols)
+        fill_row_range(var g, g.cursor_row, 0, g.cursor_col + 1)
     if mode == 2
         for r in 0..g.rows
-            fill_row_range(g, r, 0, g.cols)
+            fill_row_range(var g, r, 0, g.cols)
     g
 
 // ── Insert / Delete (line + char) ──────────────────────────────

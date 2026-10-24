@@ -39,9 +39,9 @@ fn test_grid_new_is_blank() [io]
 
 @test
 fn test_put_char_advances_cursor() [io]
-    let g0 = grid.grid_new(2, 4)
-    let g1 = grid.grid_put_char(g0, 65)   // 'A' at (0,0)
-    let g2 = grid.grid_put_char(g1, 66)   // 'B' at (0,1)
+    var g0 = grid.grid_new(2, 4)
+    var g1 = grid.grid_put_char(var g0, 65)   // 'A' at (0,0)
+    let g2 = grid.grid_put_char(var g1, 66)   // 'B' at (0,1)
     let c0 = grid.grid_get(g2, 0, 0)
     let c1 = grid.grid_get(g2, 0, 1)
     test.assert_eq(grid.cell_glyph(c0), 65)
@@ -52,10 +52,10 @@ fn test_put_char_advances_cursor() [io]
 
 @test
 fn test_put_char_wraps_at_right_margin() [io]
-    let g0 = grid.grid_new(2, 3)
-    let g1 = grid.grid_put_char(g0, 88)   // 'X' at (0,0)
-    let g2 = grid.grid_put_char(g1, 89)   // 'Y' at (0,1)
-    let g3 = grid.grid_put_char(g2, 90)   // 'Z' at (0,2) — fills the last col
+    var g0 = grid.grid_new(2, 3)
+    var g1 = grid.grid_put_char(var g0, 88)   // 'X' at (0,0)
+    var g2 = grid.grid_put_char(var g1, 89)   // 'Y' at (0,1)
+    var g3 = grid.grid_put_char(var g2, 90)   // 'Z' at (0,2) — fills the last col
     // DEFERRED wrap, xterm's pending-wrap semantics: filling the last
     // column does NOT move the cursor.  It stays pegged at cols-1 with
     // wrap_pending set, and the NEXT printable triggers the wrap.  Wrapping
@@ -64,7 +64,7 @@ fn test_put_char_wraps_at_right_margin() [io]
     test.assert_eq(grid.grid_cursor_row(g3), 0)
     test.assert_eq(grid.grid_cursor_col(g3), 2)
     // The pending wrap fires here: 'W' lands at (1,0), cursor moves on.
-    let g4 = grid.grid_put_char(g3, 87)
+    let g4 = grid.grid_put_char(var g3, 87)
     test.assert_eq(grid.grid_cursor_row(g4), 1)
     test.assert_eq(grid.grid_cursor_col(g4), 1)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g4, 1, 0)), 87)
@@ -72,21 +72,21 @@ fn test_put_char_wraps_at_right_margin() [io]
 
 @test
 fn test_line_feed_moves_down() [io]
-    let g0 = grid.grid_new(3, 3)
-    let g1 = grid.grid_cursor_set(g0, 0, 1)
-    let g2 = grid.grid_line_feed(g1)
+    var g0 = grid.grid_new(3, 3)
+    var g1 = grid.grid_cursor_set(var g0, 0, 1)
+    let g2 = grid.grid_line_feed(var g1)
     test.assert_eq(grid.grid_cursor_row(g2), 1)
     test.assert_eq(grid.grid_cursor_col(g2), 1)
     grid.grid_drop(g2)
 
 @test
 fn test_line_feed_at_bottom_scrolls() [io]
-    let g0 = grid.grid_new(2, 3)
-    let g1 = grid.grid_put_char(g0, 65)   // 'A' at (0,0)
-    let g2 = grid.grid_line_feed(g1)   // → (1,1)
-    let g3 = grid.grid_carriage_return(g2)   // → (1,0)
-    let g4 = grid.grid_put_char(g3, 66)   // 'B' at (1,0)
-    let g5 = grid.grid_line_feed(g4)   // scroll; cursor stays on bottom row
+    var g0 = grid.grid_new(2, 3)
+    var g1 = grid.grid_put_char(var g0, 65)   // 'A' at (0,0)
+    var g2 = grid.grid_line_feed(var g1)   // → (1,1)
+    var g3 = grid.grid_carriage_return(var g2)   // → (1,0)
+    var g4 = grid.grid_put_char(var g3, 66)   // 'B' at (1,0)
+    let g5 = grid.grid_line_feed(var g4)   // scroll; cursor stays on bottom row
     test.assert_eq(grid.grid_cursor_row(g5), 1)
     // After scroll: 'A' was on row 0 (now discarded), 'B' shifted to row 0
     let c00 = grid.grid_get(g5, 0, 0)
@@ -97,51 +97,51 @@ fn test_line_feed_at_bottom_scrolls() [io]
 
 @test
 fn test_carriage_return_resets_column() [io]
-    let g0 = grid.grid_new(2, 4)
-    let g1 = grid.grid_cursor_set(g0, 1, 3)
-    let g2 = grid.grid_carriage_return(g1)
+    var g0 = grid.grid_new(2, 4)
+    var g1 = grid.grid_cursor_set(var g0, 1, 3)
+    var g2 = grid.grid_carriage_return(var g1)
     test.assert_eq(grid.grid_cursor_row(g2), 1)
     test.assert_eq(grid.grid_cursor_col(g2), 0)
     grid.grid_drop(g2)
 
 @test
 fn test_backspace_decrements_column() [io]
-    let g0 = grid.grid_new(2, 4)
-    let g1 = grid.grid_cursor_set(g0, 0, 2)
-    let g2 = grid.grid_backspace(g1)
+    var g0 = grid.grid_new(2, 4)
+    var g1 = grid.grid_cursor_set(var g0, 0, 2)
+    var g2 = grid.grid_backspace(var g1)
     test.assert_eq(grid.grid_cursor_col(g2), 1)
     // Backspace at column 0 stays put.
-    let g3 = grid.grid_cursor_set(g2, 0, 0)
-    let g4 = grid.grid_backspace(g3)
+    var g3 = grid.grid_cursor_set(var g2, 0, 0)
+    let g4 = grid.grid_backspace(var g3)
     test.assert_eq(grid.grid_cursor_col(g4), 0)
     grid.grid_drop(g4)
 
 @test
 fn test_tab_advances_to_next_8col_stop() [io]
-    let g0 = grid.grid_new(2, 20)
-    let g1 = grid.grid_cursor_set(g0, 0, 3)
-    let g2 = grid.grid_tab(g1)
+    var g0 = grid.grid_new(2, 20)
+    var g1 = grid.grid_cursor_set(var g0, 0, 3)
+    var g2 = grid.grid_tab(var g1)
     test.assert_eq(grid.grid_cursor_col(g2), 8)
-    let g3 = grid.grid_tab(g2)
+    var g3 = grid.grid_tab(var g2)
     test.assert_eq(grid.grid_cursor_col(g3), 16)
     // Past the end clips to right margin (cols - 1).
-    let g4 = grid.grid_cursor_set(g3, 0, 18)
-    let g5 = grid.grid_tab(g4)
+    var g4 = grid.grid_cursor_set(var g3, 0, 18)
+    var g5 = grid.grid_tab(var g4)
     test.assert_eq(grid.grid_cursor_col(g5), 19)
     grid.grid_drop(g5)
 
 @test
 fn test_erase_line_mode_0_clears_from_cursor() [io]
     // 2 rows so the 5th 'X' wraps without triggering a scroll.
-    let g0 = grid.grid_new(2, 5)
-    let g1 = grid.grid_put_char(g0, 88)
-    let g2 = grid.grid_put_char(g1, 88)
-    let g3 = grid.grid_put_char(g2, 88)
-    let g4 = grid.grid_put_char(g3, 88)
-    let g5 = grid.grid_put_char(g4, 88)
+    var g0 = grid.grid_new(2, 5)
+    var g1 = grid.grid_put_char(var g0, 88)
+    var g2 = grid.grid_put_char(var g1, 88)
+    var g3 = grid.grid_put_char(var g2, 88)
+    var g4 = grid.grid_put_char(var g3, 88)
+    var g5 = grid.grid_put_char(var g4, 88)
     // Cursor wrapped to (1,0); reset to (0,2) then EL 0.
-    let g6 = grid.grid_cursor_set(g5, 0, 2)
-    let g7 = grid.grid_erase_line(g6, 0)
+    var g6 = grid.grid_cursor_set(var g5, 0, 2)
+    let g7 = grid.grid_erase_line(var g6, 0)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g7, 0, 0)), 88)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g7, 0, 1)), 88)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g7, 0, 2)), 32)
@@ -151,12 +151,12 @@ fn test_erase_line_mode_0_clears_from_cursor() [io]
 
 @test
 fn test_erase_display_mode_2_clears_all() [io]
-    let g0 = grid.grid_new(2, 3)
-    let g1 = grid.grid_put_char(g0, 65)
-    let g2 = grid.grid_put_char(g1, 66)
-    let g3 = grid.grid_line_feed(g2)
-    let g4 = grid.grid_put_char(g3, 67)
-    let g5 = grid.grid_erase_display(g4, 2)
+    var g0 = grid.grid_new(2, 3)
+    var g1 = grid.grid_put_char(var g0, 65)
+    var g2 = grid.grid_put_char(var g1, 66)
+    var g3 = grid.grid_line_feed(var g2)
+    var g4 = grid.grid_put_char(var g3, 67)
+    let g5 = grid.grid_erase_display(var g4, 2)
     var blanks = 0
     for r in 0..2
         for c in 0..3
@@ -167,9 +167,9 @@ fn test_erase_display_mode_2_clears_all() [io]
 
 @test
 fn test_sgr_fg_color_is_packed_into_cell() [io]
-    let g0 = grid.grid_new(1, 3)
-    let g1 = grid.grid_set_fg(g0, 2)   // green
-    let g2 = grid.grid_put_char(g1, 65)   // 'A'
+    var g0 = grid.grid_new(1, 3)
+    var g1 = grid.grid_set_fg(var g0, 2)   // green
+    var g2 = grid.grid_put_char(var g1, 65)   // 'A'
     let cell = grid.grid_get(g2, 0, 0)
     let cell1 = grid.grid_get_w1(g2, 0, 0)
     test.assert_eq(grid.cell_glyph(cell), 65)
@@ -179,12 +179,12 @@ fn test_sgr_fg_color_is_packed_into_cell() [io]
 
 @test
 fn test_sgr_reset_restores_defaults() [io]
-    let g0 = grid.grid_new(1, 3)
-    let g1 = grid.grid_set_fg(g0, 5)
-    let g2 = grid.grid_set_bg(g1, 6)
-    let g3 = grid.grid_set_attrs(g2, grid.attr_bold())
-    let g4 = grid.grid_sgr_reset(g3)
-    let g5 = grid.grid_put_char(g4, 88)
+    var g0 = grid.grid_new(1, 3)
+    var g1 = grid.grid_set_fg(var g0, 5)
+    var g2 = grid.grid_set_bg(var g1, 6)
+    var g3 = grid.grid_set_attrs(var g2, grid.attr_bold())
+    var g4 = grid.grid_sgr_reset(var g3)
+    var g5 = grid.grid_put_char(var g4, 88)
     let cell = grid.grid_get(g5, 0, 0)
     let cell1 = grid.grid_get_w1(g5, 0, 0)
     test.assert_eq(grid.cell_fg(cell), grid.default_fg_rgb())
@@ -194,17 +194,17 @@ fn test_sgr_reset_restores_defaults() [io]
 
 @test
 fn test_alt_screen_round_trip_preserves_primary() [io]
-    let g0 = grid.grid_new(2, 4)
-    let g1 = grid.grid_put_char(g0, 65)   // 'A' at (0,0)
-    let g2 = grid.grid_put_char(g1, 66)   // 'B' at (0,1)
-    let g3 = grid.grid_set_fg(g2, 4)   // blue
-    let g4 = grid.grid_enter_alt_screen(g3)
+    var g0 = grid.grid_new(2, 4)
+    var g1 = grid.grid_put_char(var g0, 65)   // 'A' at (0,0)
+    var g2 = grid.grid_put_char(var g1, 66)   // 'B' at (0,1)
+    var g3 = grid.grid_set_fg(var g2, 4)   // blue
+    var g4 = grid.grid_enter_alt_screen(var g3)
     test.assert_eq(grid.grid_cursor_row(g4), 0)
     test.assert_eq(grid.grid_cursor_col(g4), 0)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g4, 0, 0)), 32)
-    let g5 = grid.grid_put_char(g4, 90)   // 'Z' in alt at (0,0)
+    var g5 = grid.grid_put_char(var g4, 90)   // 'Z' in alt at (0,0)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g5, 0, 0)), 90)
-    let g6 = grid.grid_exit_alt_screen(g5)
+    var g6 = grid.grid_exit_alt_screen(var g5)
     test.assert_eq(grid.grid_cursor_row(g6), 0)
     test.assert_eq(grid.grid_cursor_col(g6), 2)
     test.assert_eq(grid.cell_glyph(grid.grid_get(g6, 0, 0)), 65)
@@ -216,9 +216,9 @@ fn test_alt_screen_round_trip_preserves_primary() [io]
 // once view_offset > 0.
 @test
 fn test_scrollback_captures_scrolled_rows() [io]
-    let g0 = grid.grid_new(2, 3)
+    var g0 = grid.grid_new(2, 3)
     // Put 'A' on row 0, scroll up — that row goes to scrollback.
-    let g1 = grid.grid_put_char(g0, 65)
+    let g1 = grid.grid_put_char(var g0, 65)
     let g2 = grid.grid_scroll_up(g1)
     // Live grid now: row 0 blank, row 1 blank.
     test.assert_eq(grid.cell_glyph(grid.grid_get(g2, 0, 0)), 32)
@@ -236,25 +236,25 @@ fn test_scrollback_captures_scrolled_rows() [io]
 // arrives via grid_put_char — xterm convention.
 @test
 fn test_scrollback_view_resets_on_put_char() [io]
-    let g0 = grid.grid_new(2, 3)
-    let g1 = grid.grid_put_char(g0, 65)
+    var g0 = grid.grid_new(2, 3)
+    var g1 = grid.grid_put_char(var g0, 65)
     let g2 = grid.grid_scroll_up(g1)
-    let g3 = grid.grid_scroll_view(g2, 1)
+    var g3 = grid.grid_scroll_view(g2, 1)
     test.assert_eq(grid.grid_view_offset(g3), 1)
-    let g4 = grid.grid_put_char(g3, 90)   // 'Z' resets view
+    var g4 = grid.grid_put_char(var g3, 90)   // 'Z' resets view
     test.assert_eq(grid.grid_view_offset(g4), 0)
     grid.grid_drop(g4)
 
 @test
 fn test_scrollback_skipped_when_in_alt_screen() [io]
-    let g0 = grid.grid_new(2, 3)
-    let g1 = grid.grid_put_char(g0, 65)   // 'A' on primary
-    let g2 = grid.grid_enter_alt_screen(g1)
-    let g3 = grid.grid_put_char(g2, 90)   // 'Z' in alt
-    let g4 = grid.grid_scroll_up(g3)   // alt scrolls
+    var g0 = grid.grid_new(2, 3)
+    var g1 = grid.grid_put_char(var g0, 65)   // 'A' on primary
+    var g2 = grid.grid_enter_alt_screen(var g1)
+    let g3 = grid.grid_put_char(var g2, 90)   // 'Z' in alt
+    var g4 = grid.grid_scroll_up(g3)   // alt scrolls
     // Scrollback still empty — alt's scrolls don't push.
     test.assert_eq(grid.scrollback_count(g4.scrollback), 0)
-    let g5 = grid.grid_exit_alt_screen(g4)
+    let g5 = grid.grid_exit_alt_screen(var g4)
     // Primary still has 'A' at (0,0).
     test.assert_eq(grid.cell_glyph(grid.grid_get(g5, 0, 0)), 65)
     grid.grid_drop(g5)
@@ -263,9 +263,9 @@ fn test_scrollback_skipped_when_in_alt_screen() [io]
 // clamp cursor into new bounds, keep SGR + scrollback state.
 @test
 fn test_grid_resize_grow_preserves_content() [io]
-    let g0 = grid.grid_new(2, 3)
-    let g1 = grid.grid_put_char(g0, 65)   // 'A' at (0,0)
-    let g2 = grid.grid_put_char(g1, 66)   // 'B' at (0,1)
+    var g0 = grid.grid_new(2, 3)
+    var g1 = grid.grid_put_char(var g0, 65)   // 'A' at (0,0)
+    let g2 = grid.grid_put_char(var g1, 66)   // 'B' at (0,1)
     let g3 = grid.grid_resize(g2, 4, 5)
     test.assert_eq(grid.grid_rows(g3), 4)
     test.assert_eq(grid.grid_cols(g3), 5)
@@ -284,9 +284,9 @@ fn test_grid_resize_grow_preserves_content() [io]
 // would just enshrine whichever answer the code happens to give.
 // Pre-dates the in-place-grid change.
 fn disabled_test_grid_resize_shrink_clamps_cursor() [io, ffi]
-    let g0 = grid.grid_new(3, 5)
-    let g1 = grid.grid_cursor_set(g0, 2, 4)   // cursor at far corner
-    let g2 = grid.grid_resize(g1, 2, 3)
+    var g0 = grid.grid_new(3, 5)
+    let g1 = grid.grid_cursor_set(var g0, 2, 4)   // cursor at far corner
+    var g2 = grid.grid_resize(g1, 2, 3)
     // Cursor clamped into the new (2, 3) bounds.
     test.assert_eq(grid.grid_cursor_row(g2), 1)
     test.assert_eq(grid.grid_cursor_col(g2), 2)
@@ -296,18 +296,18 @@ fn disabled_test_grid_resize_shrink_clamps_cursor() [io, ffi]
 // within: rows outside the region must NOT shift.
 @test
 fn test_scroll_region_isolates_top_and_bottom() [io]
-    let g0 = grid.grid_new(5, 3)
+    var g0 = grid.grid_new(5, 3)
     // Fill row 0..4 with 'A'..'E' (one char per row, leftmost).
-    let g1 = grid.grid_cursor_set(g0, 0, 0)
-    let g2 = grid.grid_put_char(g1, 65)
-    let g3 = grid.grid_cursor_set(g2, 1, 0)
-    let g4 = grid.grid_put_char(g3, 66)
-    let g5 = grid.grid_cursor_set(g4, 2, 0)
-    let g6 = grid.grid_put_char(g5, 67)
-    let g7 = grid.grid_cursor_set(g6, 3, 0)
-    let g8 = grid.grid_put_char(g7, 68)
-    let g9 = grid.grid_cursor_set(g8, 4, 0)
-    let gA = grid.grid_put_char(g9, 69)
+    var g1 = grid.grid_cursor_set(var g0, 0, 0)
+    var g2 = grid.grid_put_char(var g1, 65)
+    var g3 = grid.grid_cursor_set(var g2, 1, 0)
+    var g4 = grid.grid_put_char(var g3, 66)
+    var g5 = grid.grid_cursor_set(var g4, 2, 0)
+    var g6 = grid.grid_put_char(var g5, 67)
+    var g7 = grid.grid_cursor_set(var g6, 3, 0)
+    var g8 = grid.grid_put_char(var g7, 68)
+    var g9 = grid.grid_cursor_set(var g8, 4, 0)
+    let gA = grid.grid_put_char(var g9, 69)
     // Set region to rows 1..3.  Scroll up: row 1 ('B') is
     // discarded; rows 2-3 shift up; row 3 fills with blank.
     // Rows 0 ('A') and 4 ('E') are untouched.
@@ -323,12 +323,12 @@ fn test_scroll_region_isolates_top_and_bottom() [io]
 // ECH — erase N chars in place.  Cursor stays.
 @test
 fn test_erase_chars_keeps_cursor() [io]
-    let g0 = grid.grid_new(1, 5)
-    let g1 = grid.grid_put_char(g0, 65)   // 'A' at (0,0)
-    let g2 = grid.grid_put_char(g1, 66)   // 'B' at (0,1)
-    let g3 = grid.grid_put_char(g2, 67)   // 'C' at (0,2)
-    let g4 = grid.grid_put_char(g3, 68)   // 'D' at (0,3)
-    let g5 = grid.grid_cursor_set(g4, 0, 1)   // at 'B'
+    var g0 = grid.grid_new(1, 5)
+    var g1 = grid.grid_put_char(var g0, 65)   // 'A' at (0,0)
+    var g2 = grid.grid_put_char(var g1, 66)   // 'B' at (0,1)
+    var g3 = grid.grid_put_char(var g2, 67)   // 'C' at (0,2)
+    var g4 = grid.grid_put_char(var g3, 68)   // 'D' at (0,3)
+    let g5 = grid.grid_cursor_set(var g4, 0, 1)   // at 'B'
     let g6 = grid.grid_erase_chars(g5, 2)   // wipe B,C in place
     test.assert_eq(grid.cell_glyph(grid.grid_get(g6, 0, 0)), 65)   // 'A'
     test.assert_eq(grid.cell_glyph(grid.grid_get(g6, 0, 1)), 32)   // blank
@@ -340,11 +340,11 @@ fn test_erase_chars_keeps_cursor() [io]
 // IL — insert lines at cursor.
 @test
 fn test_insert_lines_pushes_down() [io]
-    let g0 = grid.grid_new(4, 3)
-    let g1 = grid.grid_put_char(g0, 65)   // 'A' at (0,0)
-    let g2 = grid.grid_cursor_set(g1, 1, 0)
-    let g3 = grid.grid_put_char(g2, 66)   // 'B' at (1,0)
-    let g4 = grid.grid_cursor_set(g3, 0, 0)
+    var g0 = grid.grid_new(4, 3)
+    var g1 = grid.grid_put_char(var g0, 65)   // 'A' at (0,0)
+    var g2 = grid.grid_cursor_set(var g1, 1, 0)
+    var g3 = grid.grid_put_char(var g2, 66)   // 'B' at (1,0)
+    var g4 = grid.grid_cursor_set(var g3, 0, 0)
     let g5 = grid.grid_insert_lines(g4, 1)   // push everything down
     test.assert_eq(grid.cell_glyph(grid.grid_get(g5, 0, 0)), 32)   // blank
     test.assert_eq(grid.cell_glyph(grid.grid_get(g5, 1, 0)), 65)   // 'A'
@@ -354,12 +354,12 @@ fn test_insert_lines_pushes_down() [io]
 // DCH — delete chars at cursor, shift left.
 @test
 fn test_delete_chars_shifts_left() [io]
-    let g0 = grid.grid_new(1, 5)
-    let g1 = grid.grid_put_char(g0, 65)   // 'A' at (0,0)
-    let g2 = grid.grid_put_char(g1, 66)   // 'B' at (0,1)
-    let g3 = grid.grid_put_char(g2, 67)   // 'C' at (0,2)
-    let g4 = grid.grid_put_char(g3, 68)   // 'D' at (0,3)
-    let g5 = grid.grid_cursor_set(g4, 0, 1)   // at 'B'
+    var g0 = grid.grid_new(1, 5)
+    var g1 = grid.grid_put_char(var g0, 65)   // 'A' at (0,0)
+    var g2 = grid.grid_put_char(var g1, 66)   // 'B' at (0,1)
+    var g3 = grid.grid_put_char(var g2, 67)   // 'C' at (0,2)
+    var g4 = grid.grid_put_char(var g3, 68)   // 'D' at (0,3)
+    var g5 = grid.grid_cursor_set(var g4, 0, 1)   // at 'B'
     let g6 = grid.grid_delete_chars(g5, 2)   // delete 'B','C'
     test.assert_eq(grid.cell_glyph(grid.grid_get(g6, 0, 0)), 65)   // 'A'
     test.assert_eq(grid.cell_glyph(grid.grid_get(g6, 0, 1)), 68)   // 'D' shifted in
@@ -372,17 +372,17 @@ fn test_decsc_decrc_round_trip() [io]
     // right corner so put_char doesn't trigger an end-of-row
     // wrap + bottom-of-screen scroll that would relocate the
     // probe cell.
-    let g0 = grid.grid_new(3, 4)
-    let g1 = grid.grid_cursor_set(g0, 1, 2)
-    let g2 = grid.grid_set_fg(g1, 6)   // cyan
-    let g3 = grid.grid_decsc(g2)
-    let g4 = grid.grid_cursor_set(g3, 0, 0)
-    let g5 = grid.grid_set_fg(g4, 1)   // red
+    var g0 = grid.grid_new(3, 4)
+    var g1 = grid.grid_cursor_set(var g0, 1, 2)
+    let g2 = grid.grid_set_fg(var g1, 6)   // cyan
+    var g3 = grid.grid_decsc(g2)
+    var g4 = grid.grid_cursor_set(var g3, 0, 0)
+    var g5 = grid.grid_set_fg(var g4, 1)   // red
     test.assert_eq(grid.grid_cursor_row(g5), 0)
-    let g6 = grid.grid_decrc(g5)
+    var g6 = grid.grid_decrc(var g5)
     test.assert_eq(grid.grid_cursor_row(g6), 1)
     test.assert_eq(grid.grid_cursor_col(g6), 2)
-    let g7 = grid.grid_put_char(g6, 88)   // 'X' at (1,2) in cyan
+    let g7 = grid.grid_put_char(var g6, 88)   // 'X' at (1,2) in cyan
     let cell = grid.grid_get(g7, 1, 2)
     test.assert_eq(grid.cell_glyph(cell), 88)
     test.assert_eq(grid.cell_fg(cell), 6)
