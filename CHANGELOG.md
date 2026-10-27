@@ -14,6 +14,19 @@ changed.
 
 ## Unreleased
 
+- **Eight public functions take their grid `var`, and a call marks it.**
+  `grid_put_char`, `grid_backspace`, `grid_tab`, `grid_carriage_return`,
+  `grid_line_feed`, `grid_erase_line` and `grid_erase_display` declare
+  `var g: Grid`, and `parser_feed_byte` declares `var g: Grid` beside
+  its `var p: Parser`: each writes through the grid it is handed, so the
+  caller writes `grid.grid_put_char(var g, 65)` and
+  `parser.parser_feed_byte(var p, var g, b)`.  An unmarked call is the
+  warning E2050 on Novo 0.21.1 and an error in a later release.  The
+  signatures changed and no function's answer did.  This is a breaking
+  change for callers, so below 1.0 the release that carries it bumps
+  the minor number, and it needs Novo 0.21.1 or later for the marker.
+  `orbit/novoterm` and `orbit/novomux` write the markers.
+
 - **The escape-sequence parser is `ansi-nv`'s.**  `src/parser.nv` no
   longer carries a state machine: it depends on `ansi-nv ^0.2.0`, feeds
   each byte to `vtparse.feed`, reads what the byte asked for with

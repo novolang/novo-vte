@@ -34,9 +34,9 @@ use parser
 
 fn main() [io, ffi]
     var g = grid.grid_new(2, 3)
-    let p = parser.parser_new()
+    var p = parser.parser_new()
     for b in [65, 27, 91, 50, 59, 49, 72, 66]   // A ESC [ 2 ; 1 H B
-        g = parser.parser_feed_byte(p, g, b)
+        g = parser.parser_feed_byte(var p, var g, b)
     print(grid.grid_to_string(g))               // @ 1,1 / A / B
     parser.parser_drop(p)
     grid.grid_drop(g)
