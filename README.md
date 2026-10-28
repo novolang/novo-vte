@@ -6,9 +6,10 @@ same parser, which is what removes the "novomux inside novoterm
 renders differently than novomux inside xterm" class of conformance
 bug.
 
-Pure Novo — `std.array` through `@ffi` and nothing else — so it runs
-headless, with no PTY, no window and no GPU.  Feed it bytes, read
-cells back: everything about drawing them belongs to the consumer.
+Pure Novo, with no C binding of its own, so it runs headless: no PTY,
+no window and no GPU.  The package is layer `host`; its only effect
+beyond memory is `[mutate]`, for the session colours described below.
+Feed it bytes, read cells back: everything about drawing them belongs to the consumer.
 
 ## Using it
 
@@ -25,14 +26,15 @@ use parser
 
 A grid is a rectangle of cells with a cursor and the current colours
 riding on it; the parser turns a byte at a time into changes to one.
-Both are `@ffi`-backed, so a caller declares `[io, ffi]` and drops what
-it made:
+Both hold their cells in `std.array` buffers, so a caller drops what it
+made, and `parser_feed_byte` declares `[mutate]` because an SGR reads
+the session colours:
 
 ```novo
 use grid
 use parser
 
-fn main() [io, ffi]
+fn main() [io, mutate]
     var g = grid.grid_new(2, 3)
     var p = parser.parser_new()
     for b in [65, 27, 91, 50, 59, 49, 72, 66]   // A ESC [ 2 ; 1 H B
@@ -58,7 +60,7 @@ goes stale.
 
 ## What is public
 
-Ninety-four items across the two modules, and they are what this
+A hundred and one items across the two modules, and they are what this
 package promises. The groups below are what the reference page is
 organised by; the page itself carries the signatures.
 
@@ -70,6 +72,7 @@ organised by; the page itself carries the signatures.
 | `attr_bold`, `attr_underline`, `attr_reverse`, `attr_italic`, `attr_strike` | `grid` | the five rendition bits, one per ECMA-48 switch |
 | `grid_cursor_row`, `grid_cursor_col`, `grid_cursor_set`, and the `grid_*cursor_visible` / `grid_*cursor_shape*` accessors | `grid` | where the cursor is, whether it is drawn, and what shape |
 | `grid_set_fg`, `grid_set_bg`, `grid_set_attrs`, `grid_add_attr`, `grid_clear_attr`, `grid_sgr_reset` | `grid` | the SGR state later writes inherit |
+| `palette_lookup`, `palette_set`, `palette_reset`, `session_default_fg`, `session_default_bg`, `session_set_default_fg`, `session_set_default_bg` | `grid` | the session colours: the 256-entry palette an indexed SGR resolves through and the two defaults SGR 39 / 49 return to, which a host sets once and an OSC 4 / 10 / 11 / 104 changes |
 | `grid_put_char`, `grid_backspace`, `grid_tab`, `grid_carriage_return`, `grid_line_feed` | `grid` | write a glyph, and the four control characters |
 | `grid_erase_line`, `grid_erase_display`, `grid_erase_chars`, `grid_insert_lines`, `grid_delete_lines`, `grid_insert_chars`, `grid_delete_chars` | `grid` | the ECMA-48 editing functions, in full pairs |
 | `grid_set_scroll_region`, `grid_scroll_up`, `grid_decsc`, `grid_decrc`, `grid_enter_alt_screen`, `grid_exit_alt_screen`, `grid_using_alt` | `grid` | scroll regions, the saved cursor, the alt screen |
@@ -82,8 +85,6 @@ organised by; the page itself carries the signatures.
 
 **What stays private, so you know you are not missing it:**
 
-- The `@ffi` re-declarations of `std.array` and of the palette lookup —
-  they map to C symbols, and a consumer that wants one declares it too.
 - The cell packers below `pack_word0_idx` / `pack_word1`
   (`pack_word0`, `blank_word0`, `blank_word1`, `blank_cell`) and the
   index arithmetic around them.
@@ -153,7 +154,7 @@ put it.
 
 **Colours arrive resolved.**  An indexed SGR colour (`CSI 38;5;Nm`,
 `CSI 31m`) is turned into 24-bit RGB at the moment the cell is
-written, C-side, through the session palette.  Consumers therefore
+written, through the session palette.  Consumers therefore
 never look a colour up — a renderer reads RGB straight out of the
 cell, and a live palette change affects only cells written after it.
 

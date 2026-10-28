@@ -27,7 +27,7 @@ fn palette_lookup_h(idx: Int) -> Int [io, ffi]
 // Helper: feed each byte of `s` through the parser, return the
 // final Grid.  Reads stay on the same row throughout — these
 // tests favor short fixed-size grids for easy assertion.
-fn feed_str(var p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi]
+fn feed_str(var p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi, mutate]
     let n = str.len(s)
     var g_acc = g
     for i in 0..n

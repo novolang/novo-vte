@@ -436,3 +436,69 @@ fn test_mouse_clicks_forward_but_1000_has_no_drag() [io]
     test.assert_eq(grid.grid_mouse_sgr_code(9, 0, false, 0), 0)
     // …but motion — even with a button held — is not (1000 = no drag).
     test.assert_eq(grid.grid_mouse_sgr_code(9, 8, true, 0), 0 - 1)
+
+// ── Session colours ─────────────────────────────────────────────
+//
+// The palette and the two default colours are module state, so each
+// test puts back what it changed before it returns.
+
+@test
+fn test_palette_defaults_are_the_xterm_table() [io, mutate]
+    grid.palette_reset()
+    // 0..15 the ANSI base.
+    test.assert_eq(grid.palette_lookup(0), 0x000000)
+    test.assert_eq(grid.palette_lookup(1), 0xAA0000)
+    test.assert_eq(grid.palette_lookup(9), 0xFF5555)
+    test.assert_eq(grid.palette_lookup(15), 0xFFFFFF)
+    // 16..231 the 6 x 6 x 6 cube.
+    test.assert_eq(grid.palette_lookup(16), 0x000000)
+    test.assert_eq(grid.palette_lookup(21), 0x0000FF)
+    test.assert_eq(grid.palette_lookup(67), 0x5F87AF)
+    test.assert_eq(grid.palette_lookup(196), 0xFF0000)
+    test.assert_eq(grid.palette_lookup(231), 0xFFFFFF)
+    // 232..255 the grayscale ramp.
+    test.assert_eq(grid.palette_lookup(232), 0x080808)
+    test.assert_eq(grid.palette_lookup(255), 0xEEEEEE)
+    // Outside the table: white.
+    test.assert_eq(grid.palette_lookup(0 - 1), 0xFFFFFF)
+    test.assert_eq(grid.palette_lookup(256), 0xFFFFFF)
+
+@test
+fn test_palette_set_and_reset() [io, mutate]
+    grid.palette_reset()
+    grid.palette_set(1, 0x123456)
+    grid.palette_set(200, 0xFF123456)   // only the low 24 bits are kept
+    test.assert_eq(grid.palette_lookup(1), 0x123456)
+    test.assert_eq(grid.palette_lookup(200), 0x123456)
+    // A slot nobody changed still answers the default.
+    test.assert_eq(grid.palette_lookup(2), 0x00AA00)
+    // An index outside the table is ignored.
+    grid.palette_set(0 - 1, 0x111111)
+    grid.palette_set(256, 0x222222)
+    test.assert_eq(grid.palette_lookup(256), 0xFFFFFF)
+    // The change reaches a cell built from an index.
+    test.assert_eq(grid.cell_fg(grid.pack_word0_idx(65, 1, 0)), 0x123456)
+    grid.palette_reset()
+    test.assert_eq(grid.palette_lookup(1), 0xAA0000)
+    test.assert_eq(grid.palette_lookup(200), 0xFF00D7)
+
+@test
+fn test_session_defaults_start_light_gray_on_black_and_follow_the_setters() [io, mutate]
+    let fg0 = grid.session_default_fg()
+    let bg0 = grid.session_default_bg()
+    test.assert_eq(fg0, 0xAAAAAA)
+    test.assert_eq(bg0, 0x000000)
+    grid.session_set_default_fg(0xFF112233)   // low 24 bits
+    grid.session_set_default_bg(0x445566)
+    test.assert_eq(grid.session_default_fg(), 0x112233)
+    test.assert_eq(grid.session_default_bg(), 0x445566)
+    // SGR 0 reads them.
+    var g = grid.grid_new(1, 2)
+    g = grid.grid_sgr_reset(var g)
+    g = grid.grid_put_char(var g, 65)
+    let cell = grid.grid_get(g, 0, 0)
+    test.assert_eq(grid.cell_fg(cell), 0x112233)
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 0)), 0x445566)
+    grid.grid_drop(g)
+    grid.session_set_default_fg(fg0)
+    grid.session_set_default_bg(bg0)

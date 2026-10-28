@@ -638,7 +638,7 @@ fn test_real_zsh_line_edit_matches_xterm() [io]
     grid.grid_drop(g)
 
 // Feed each byte of `s` through the parser and return the final Grid.
-fn feed_str(var p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi]
+fn feed_str(var p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi, mutate]
     let n = str.len(s)
     var acc = g
     for i in 0..n

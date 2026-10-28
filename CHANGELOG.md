@@ -10,7 +10,11 @@ The package builds with no migration warning under toolchain 0.22.0 and
 needs Novo 0.22.0 or later.  The requirement on `ansi-nv` is `^0.2.2`,
 whose `var` markers at every call site the 0.21.1 compiler asks for (E2050)
 are in place; the earlier 0.2.x versions drew those warnings into this
-package's build.  No function's signature or answer changed.
+package's build.  The package no longer declares `@ffi`: the session
+palette and the default colours are set through `grid` functions, which
+changes what a host that pushed them through `window.nv` calls.  Below
+`1.0.0` that is the reason for the minor number; the entry is the first
+one under Unreleased, with the callers it touches.
 
 ## 0.3.1 — 2026-09-26
 
@@ -21,6 +25,36 @@ it is handed on, as toolchain 0.11 requires of a list born under
 changed.
 
 ## Unreleased
+
+- **No `@ffi` left: the package is `host` with a `[mutate]` budget and
+  publishes without `--allow-effect-budget`.**  The seven externs are
+  gone.  The four `std.array` re-declarations in `grid` and `parser`
+  are deleted and both modules call the stdlib's `array_i64_*` rows
+  directly: since 0.9.0 they are `[]`, and a package build shows the
+  standard library to its sibling modules, so the reason the copies
+  were kept no longer holds.  The three terminal externs
+  (`novo_term_palette_lookup`, `novo_term_default_fg_get`,
+  `novo_term_default_bg_get`) read C globals; the same state is now
+  module state in `grid`.  Sixty-four public functions that declared
+  `[io, ffi]` for those externs now declare `[]`, and the ones that
+  read the session colours (`pack_word0_idx`, `grid_sgr_reset`,
+  `parser_feed_byte`) declare `[mutate]`.  Cell layout and every
+  answer are unchanged: the palette seeds the same xterm table (the
+  16 ANSI colours, the 6 x 6 x 6 cube, the 24-step gray ramp) and the
+  defaults start at `0xAAAAAA` on `0x000000`.
+
+- **Breaking for a host that sets the session colours: seven new
+  `grid` functions replace the C runtime's setters.**
+  `palette_lookup`, `palette_set`, `palette_reset`,
+  `session_default_fg`, `session_default_bg`,
+  `session_set_default_fg` and `session_set_default_bg` are the
+  palette and the SGR 39 / 49 defaults.  A program that pushed a theme
+  or handled OSC 4 / 10 / 11 / 104 through `window.nv`'s
+  `novo_term_palette_set_h`, `_reset_h`, `novo_term_default_fg_set_h`
+  or `_bg_set_h` no longer reaches the parser, which reads this
+  package's state, and calls the `grid` functions instead.  A program
+  that only feeds bytes and reads cells changes nothing.
+  `orbit/novoterm` and `orbit/novomux` call them.
 
 - **Eight public functions take their grid `var`, and a call marks it.**
   `grid_put_char`, `grid_backspace`, `grid_tab`, `grid_carriage_return`,
