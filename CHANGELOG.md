@@ -4,6 +4,14 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.4.0 — 2026-10-28
+
+The package builds with no migration warning under toolchain 0.22.0 and
+needs Novo 0.22.0 or later.  The requirement on `ansi-nv` is `^0.2.2`,
+whose `var` markers at every call site the 0.21.1 compiler asks for (E2050)
+are in place; the earlier 0.2.x versions drew those warnings into this
+package's build.  No function's signature or answer changed.
+
 ## 0.3.1 — 2026-09-26
 
 The functions that build a list or a buffer in place declare the name
