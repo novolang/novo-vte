@@ -502,3 +502,454 @@ fn test_session_defaults_start_light_gray_on_black_and_follow_the_setters() [io,
     grid.grid_drop(g)
     grid.session_set_default_fg(fg0)
     grid.session_set_default_bg(bg0)
+
+// ── Bounds, rings, editing limits, alt screen and resize ───────────
+//
+// The tests below pin the edges of the model: what a read outside the
+// grid answers, where a count is clamped, what a function does when
+// there is nothing for it to do, and how a resize carries content.
+
+// A grid whose row `r` holds the letter 'A' + r in every column.
+fn lettered_rows(rows: Int, cols: Int) -> grid.Grid [io, mutate]
+    var g = grid.grid_new(rows, cols)
+    for r in 0..rows
+        for c in 0..cols
+            g = grid.grid_set(g, r, c, grid.pack_word0_idx(65 + r, 7, 0))
+    g
+
+// Column 0 of every row as one string; a blank is a space.
+fn col0_letters(g: grid.Grid) -> Str [io, ffi]
+    var s = ""
+    for r in 0..grid.grid_rows(g)
+        s = s + str.from_char(grid.cell_glyph(grid.grid_get(g, r, 0)))
+    s
+
+// Row `r` as one string.
+fn row_text(g: grid.Grid, r: Int) -> Str [io, ffi]
+    var s = ""
+    for c in 0..grid.grid_cols(g)
+        s = s + str.from_char(grid.cell_glyph(grid.grid_get(g, r, c)))
+    s
+
+// A read outside the grid answers a blank cell in the default colours,
+// on both words, and does not fault.
+@test
+fn test_reads_outside_the_grid_answer_a_blank() [io]
+    let g = grid.grid_new(2, 3)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, -1, 0)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 2, 0)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 3)), 32)
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, -1)), grid.default_bg_rgb())
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 5, 5)), grid.default_bg_rgb())
+    grid.grid_drop(g)
+
+// The cursor setter clamps into the grid on both axes.
+@test
+fn test_cursor_set_clamps_into_the_grid() [io]
+    var g0 = grid.grid_new(3, 4)
+    let g1 = grid.grid_cursor_set(var g0, -3, 99)
+    test.assert_eq(grid.grid_cursor_row(g1), 0)
+    test.assert_eq(grid.grid_cursor_col(g1), 3)
+    let g2 = grid.grid_cursor_set(var g0, 99, -1)
+    test.assert_eq(grid.grid_cursor_row(g2), 2)
+    test.assert_eq(grid.grid_cursor_col(g2), 0)
+    grid.grid_drop(g2)
+
+// A scroll region is clamped into the grid; one that names no row, or
+// whose top is below its bottom, is ignored and the old region stands.
+@test
+fn test_scroll_region_is_clamped_or_ignored() [io]
+    var g = grid.grid_new(5, 2)
+    g = grid.grid_set_scroll_region(g, -4, 2)
+    test.assert_eq(grid.grid_region_top(g), 0)
+    test.assert_eq(grid.grid_region_bottom(g), 2)
+    g = grid.grid_set_scroll_region(g, 1, 99)
+    test.assert_eq(grid.grid_region_top(g), 1)
+    test.assert_eq(grid.grid_region_bottom(g), 4)
+    g = grid.grid_set_scroll_region(g, 9, 12)
+    test.assert_eq(grid.grid_region_top(g), 1)
+    test.assert_eq(grid.grid_region_bottom(g), 4)
+    g = grid.grid_set_scroll_region(g, 3, 1)
+    test.assert_eq(grid.grid_region_top(g), 1)
+    test.assert_eq(grid.grid_region_bottom(g), 4)
+    grid.grid_drop(g)
+
+// NUL, a negative value and DEL are not printable: nothing is written
+// and the cursor stays.
+@test
+fn test_put_char_ignores_nul_negative_and_del() [io]
+    var g0 = grid.grid_new(1, 4)
+    var g = grid.grid_put_char(var g0, 0)
+    g = grid.grid_put_char(var g, -5)
+    g = grid.grid_put_char(var g, 127)
+    test.assert_eq(grid.grid_cursor_col(g), 0)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 0)), 32)
+    grid.grid_drop(g)
+
+// Filling the last column of the last row and printing once more
+// scrolls the grid: the top row goes to history, the wrap is recorded on
+// the row that wrapped, and the new character starts the bottom row.
+@test
+fn test_wrap_at_the_bottom_scrolls_and_marks_the_wrapped_row() [io]
+    var g = grid.grid_new(2, 2)
+    for ch in [65, 66, 67, 68, 69]
+        g = grid.grid_put_char(var g, ch)
+    test.assert_eq(row_text(g, 0), "CD")
+    test.assert_eq(row_text(g, 1), "E ")
+    test.assert_eq(scrollback_text(g, 0), "AB")
+    test.assert_eq(grid.grid_row_wrapped(g, 0), 1)
+    test.assert_eq(grid.grid_row_wrapped(g, 1), 0)
+    // A row index outside the grid has no wrap mark.
+    test.assert_eq(grid.grid_row_wrapped(g, -1), 0)
+    test.assert_eq(grid.grid_row_wrapped(g, 2), 0)
+    grid.grid_drop(g)
+
+// A scrollback row as one string, from the ring's own reader.
+fn scrollback_text(g: grid.Grid, l: Int) -> Str [io, ffi]
+    var s = ""
+    for c in 0..grid.scrollback_cols(g.scrollback)
+        s = s + str.from_char(grid.cell_glyph(grid.scrollback_get_cell(g.scrollback, l, c)))
+    s
+
+// The ring holds 1000 rows.  Past that, each scrolled-off row replaces
+// the oldest, so the oldest row is the one scrolled 1000 scrolls ago.
+@test
+fn test_scrollback_ring_replaces_the_oldest_row_when_full() [io]
+    var g = grid.grid_new(2, 2)
+    for k in 1..1006
+        g = grid.grid_set(g, 0, 0, grid.pack_word0_idx(100 + k, 7, 0))
+        g = grid.grid_scroll_up(g)
+    test.assert_eq(grid.scrollback_count(g.scrollback), 1000)
+    // Scrolls 1..5 were overwritten; the oldest kept is the sixth.
+    test.assert_eq(grid.cell_glyph(grid.scrollback_get_cell(g.scrollback, 0, 0)), 106)
+    test.assert_eq(grid.cell_glyph(grid.scrollback_get_cell(g.scrollback, 999, 0)), 1105)
+    grid.grid_drop(g)
+
+// A scrollback read outside the stored rows or the stored width answers
+// a blank on both words.
+@test
+fn test_scrollback_reads_outside_the_ring_answer_a_blank() [io]
+    var g0 = grid.grid_new(2, 2)
+    let g = grid.grid_scroll_up(g0)
+    let sb = g.scrollback
+    test.assert_eq(grid.scrollback_count(sb), 1)
+    test.assert_eq(grid.cell_glyph(grid.scrollback_get_cell(sb, 1, 0)), 32)
+    test.assert_eq(grid.cell_glyph(grid.scrollback_get_cell(sb, -1, 0)), 32)
+    test.assert_eq(grid.cell_glyph(grid.scrollback_get_cell(sb, 0, 2)), 32)
+    test.assert_eq(grid.cell_bg(grid.scrollback_get_cell_w1(sb, 1, 0)), grid.default_bg_rgb())
+    test.assert_eq(grid.cell_bg(grid.scrollback_get_cell_w1(sb, 0, -1)), grid.default_bg_rgb())
+    grid.grid_drop(g)
+
+// The view reads history through the pair `grid_view_get` /
+// `grid_view_get_w1`: a row above the stored history answers a blank, and
+// the alt screen bypasses the history entirely.
+@test
+fn test_view_reads_blank_above_history_and_bypasses_it_in_alt() [io]
+    var g = lettered_rows(2, 2)
+    g = grid.grid_scroll_up(g)
+    // Raw ring setter: the view can be put past the stored count, and the
+    // reader answers blank for the rows that lie above the first.
+    grid.scrollback_set_view_offset(g.scrollback, 3)
+    test.assert_eq(grid.cell_glyph(grid.grid_view_get(g, 0, 0)), 32)
+    test.assert_eq(grid.cell_bg(grid.grid_view_get_w1(g, 0, 0)), grid.default_bg_rgb())
+    // One row back: the top row is the stored 'A', the next the live 'B'.
+    grid.scrollback_set_view_offset(g.scrollback, 1)
+    test.assert_eq(grid.cell_glyph(grid.grid_view_get(g, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_view_get(g, 1, 0)), 66)
+    test.assert_eq(grid.cell_bg(grid.grid_view_get_w1(g, 0, 0)), grid.default_bg_rgb())
+    // Alt screen: the view is the live alt grid whatever the offset says.
+    g = grid.grid_enter_alt_screen(var g)
+    g = grid.grid_set(g, 0, 0, grid.pack_word0_idx(88, 7, 0))
+    test.assert_eq(grid.cell_glyph(grid.grid_view_get(g, 0, 0)), 88)
+    test.assert_eq(grid.cell_bg(grid.grid_view_get_w1(g, 0, 0)), grid.default_bg_rgb())
+    // Scrolling the view is refused there.
+    g = grid.grid_scroll_view(g, 1)
+    test.assert_eq(grid.grid_view_offset(g), 1)
+    grid.grid_drop(g)
+
+// A view scrolled down past live output stops at live.
+@test
+fn test_scroll_view_clamps_at_live_and_at_the_oldest_row() [io]
+    var g = lettered_rows(2, 2)
+    g = grid.grid_scroll_up(g)
+    g = grid.grid_scroll_view(g, 9)
+    test.assert_eq(grid.grid_view_offset(g), 1)
+    g = grid.grid_scroll_view(g, -9)
+    test.assert_eq(grid.grid_view_offset(g), 0)
+    // At live the view is the grid itself: its top row is the scrolled-up 'B'.
+    test.assert_eq(grid.cell_glyph(grid.grid_view_get(g, 0, 0)), 66)
+    test.assert_eq(grid.cell_bg(grid.grid_view_get_w1(g, 0, 0)), grid.default_bg_rgb())
+    grid.grid_drop(g)
+
+// The SGR button byte of a mouse report: 0 left, 1 middle, 2 right, 3
+// none; +32 for motion, +16 for Ctrl, +8 for Alt.  The report is
+// withheld when the mode does not ask for it, and Shift is left to the
+// terminal's own selection.
+@test
+fn test_mouse_code_encodes_buttons_modifiers_and_motion() [io]
+    // Drag with the middle button held, in 1002.
+    test.assert_eq(grid.grid_mouse_sgr_code(2, 16, true, 0), 33)
+    // Drag with the right button held, in 1002.
+    test.assert_eq(grid.grid_mouse_sgr_code(2, 32, true, 0), 34)
+    // Drag with the left button held.
+    test.assert_eq(grid.grid_mouse_sgr_code(2, 8, true, 0), 32)
+    // Idle hover is button 3 plus motion, and only 1003 reports it.
+    test.assert_eq(grid.grid_mouse_sgr_code(4, 0, true, 0), 35)
+    test.assert_eq(grid.grid_mouse_sgr_code(2, 0, true, 0), -1)
+    // Press with Ctrl, with Alt, with both.
+    test.assert_eq(grid.grid_mouse_sgr_code(1, 2, false, 0), 16)
+    test.assert_eq(grid.grid_mouse_sgr_code(1, 4, false, 2), 10)
+    test.assert_eq(grid.grid_mouse_sgr_code(1, 6, false, 0), 24)
+    // Shift, or no tracking, is not forwarded.
+    test.assert_eq(grid.grid_mouse_sgr_code(1, 1, false, 0), -1)
+    test.assert_eq(grid.grid_mouse_sgr_code(0, 0, false, 0), -1)
+
+// Mode bits are set and cleared one at a time; clearing a bit that is
+// not set leaves the mask as it was.
+@test
+fn test_mouse_mode_bits_set_and_clear_independently() [io]
+    var g = grid.grid_new(1, 1)
+    g = grid.grid_mouse_mode_bit_on(g, 1)
+    g = grid.grid_mouse_mode_bit_on(g, 4)
+    test.assert_eq(grid.grid_mouse_mode(g), 5)
+    g = grid.grid_mouse_mode_bit_off(g, 1)
+    test.assert_eq(grid.grid_mouse_mode(g), 4)
+    g = grid.grid_mouse_mode_bit_off(g, 1)
+    test.assert_eq(grid.grid_mouse_mode(g), 4)
+    grid.grid_drop(g)
+
+// EL 1 erases from the start of the line through the cursor, EL 2 the
+// whole line; ED 1 erases from the start of the display through the
+// cursor.  Cells past the erased span keep their content.
+@test
+fn test_erase_line_and_display_toward_the_start() [io]
+    var g = lettered_rows(3, 4)
+    g = grid.grid_cursor_set(var g, 1, 2)
+    g = grid.grid_erase_line(var g, 1)
+    test.assert_eq(row_text(g, 1), "   B")
+    g = grid.grid_erase_line(var g, 2)
+    test.assert_eq(row_text(g, 1), "    ")
+    g = lettered_rows(3, 4)
+    g = grid.grid_cursor_set(var g, 1, 2)
+    g = grid.grid_erase_display(var g, 1)
+    test.assert_eq(row_text(g, 0), "    ")
+    test.assert_eq(row_text(g, 1), "   B")
+    test.assert_eq(row_text(g, 2), "CCCC")
+    grid.grid_drop(g)
+
+// A count below one does nothing; a count past the region clamps to the
+// rows that remain; a cursor below the region's bottom is outside it.
+@test
+fn test_insert_and_delete_lines_respect_count_and_region() [io]
+    var g = lettered_rows(5, 2)
+    g = grid.grid_set_scroll_region(g, 1, 3)
+    g = grid.grid_cursor_set(var g, 2, 0)
+    g = grid.grid_insert_lines(g, 0)
+    g = grid.grid_delete_lines(g, -1)
+    test.assert_eq(col0_letters(g), "ABCDE")
+    g = grid.grid_insert_lines(g, 9)
+    test.assert_eq(col0_letters(g), "AB  E")
+    g = lettered_rows(5, 2)
+    g = grid.grid_set_scroll_region(g, 1, 3)
+    g = grid.grid_cursor_set(var g, 2, 0)
+    g = grid.grid_delete_lines(g, 9)
+    test.assert_eq(col0_letters(g), "AB  E")
+    g = lettered_rows(5, 2)
+    g = grid.grid_set_scroll_region(g, 1, 3)
+    g = grid.grid_cursor_set(var g, 4, 0)
+    g = grid.grid_insert_lines(g, 1)
+    g = grid.grid_delete_lines(g, 1)
+    test.assert_eq(col0_letters(g), "ABCDE")
+    grid.grid_drop(g)
+
+// ECH, ICH and DCH with a count below one do nothing, and with a count
+// past the right margin act on the cells that are there.
+@test
+fn test_character_editing_counts_are_limited_to_the_row() [io]
+    var g = grid.grid_new(1, 6)
+    for ch in [65, 66, 67, 68, 69, 70]
+        g = grid.grid_put_char(var g, ch)
+    g = grid.grid_cursor_set(var g, 0, 4)
+    g = grid.grid_erase_chars(g, 0)
+    g = grid.grid_insert_chars(g, 0)
+    g = grid.grid_delete_chars(g, -2)
+    test.assert_eq(row_text(g, 0), "ABCDEF")
+    g = grid.grid_erase_chars(g, 9)
+    test.assert_eq(row_text(g, 0), "ABCD  ")
+    g = grid.grid_cursor_set(var g, 0, 0)
+    for ch in [69, 70, 71, 72, 73, 74]
+        g = grid.grid_put_char(var g, ch)
+    g = grid.grid_cursor_set(var g, 0, 4)
+    g = grid.grid_insert_chars(g, 9)
+    test.assert_eq(row_text(g, 0), "EFGH  ")
+    g = grid.grid_delete_chars(g, 9)
+    test.assert_eq(row_text(g, 0), "EFGH  ")
+    grid.grid_drop(g)
+
+// SD with a count below one does nothing, and with a count past the
+// region blanks the region and leaves the rows outside it.
+@test
+fn test_scroll_region_down_counts_are_limited_to_the_region() [io]
+    var g = lettered_rows(4, 2)
+    g = grid.grid_set_scroll_region(g, 1, 2)
+    g = grid.grid_scroll_region_down(g, 0)
+    test.assert_eq(col0_letters(g), "ABCD")
+    g = grid.grid_scroll_region_down(g, 9)
+    test.assert_eq(col0_letters(g), "A  D")
+    g = lettered_rows(4, 2)
+    g = grid.grid_scroll_region_up(g, 0)
+    test.assert_eq(col0_letters(g), "ABCD")
+    grid.grid_drop(g)
+
+// Entering the alt screen while already in it clears it and homes the
+// cursor with default colours; the primary screen is not touched.
+@test
+fn test_enter_alt_twice_clears_the_alt_screen() [io]
+    var g = lettered_rows(2, 3)
+    g = grid.grid_enter_alt_screen(var g)
+    g = grid.grid_put_char(var g, 88)
+    g = grid.grid_set_fg(var g, 0x123456)
+    g = grid.grid_set_attrs(var g, 1)
+    g = grid.grid_enter_alt_screen(var g)
+    test.assert_eq(row_text(g, 0), "   ")
+    test.assert_eq(grid.grid_cursor_col(g), 0)
+    test.assert_eq(g.fg, grid.default_fg_rgb())
+    test.assert_eq(g.attrs, 0)
+    g = grid.grid_exit_alt_screen(var g)
+    test.assert_eq(col0_letters(g), "AB")
+    grid.grid_drop(g)
+
+// Leaving the alt screen without having entered it does nothing;
+// entering it a second time after a leave reuses the same buffer and
+// shows it cleared.
+@test
+fn test_alt_screen_exit_without_enter_and_reenter_after_exit() [io]
+    var g = lettered_rows(2, 3)
+    g = grid.grid_cursor_set(var g, 1, 1)
+    g = grid.grid_exit_alt_screen(var g)
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    test.assert_eq(col0_letters(g), "AB")
+    g = grid.grid_enter_alt_screen(var g)
+    let first = array_i64_get(g.alt_meta, 1)
+    g = grid.grid_put_char(var g, 88)
+    g = grid.grid_exit_alt_screen(var g)
+    g = grid.grid_enter_alt_screen(var g)
+    test.assert_eq(array_i64_get(g.alt_meta, 1), first)
+    test.assert_eq(row_text(g, 0), "   ")
+    grid.grid_drop(g)
+
+// Dropping a grid that is on the alt screen releases the saved primary
+// buffer as well as the alt one.
+@test
+fn test_drop_while_on_the_alt_screen() [io]
+    var g = lettered_rows(2, 3)
+    g = grid.grid_enter_alt_screen(var g)
+    test.assert_eq(grid.grid_using_alt(g), 1)
+    grid.grid_drop(g)
+
+// Widening a grid rejoins a soft-wrapped line, and narrowing wraps it
+// again at the new width, marking each row that continues.  A round trip
+// gives back the line.
+@test
+fn test_resize_reflows_a_wrapped_line() [io]
+    var g = grid.grid_new(4, 4)
+    for ch in [65, 66, 67, 68, 69, 70, 71]
+        g = grid.grid_put_char(var g, ch)
+    test.assert_eq(grid.grid_row_wrapped(g, 0), 1)
+    g = grid.grid_resize(g, 4, 8)
+    test.assert_eq(row_text(g, 0), "ABCDEFG ")
+    test.assert_eq(row_text(g, 1), "        ")
+    test.assert_eq(grid.grid_row_wrapped(g, 0), 0)
+    g = grid.grid_resize(g, 4, 3)
+    test.assert_eq(row_text(g, 0), "ABC")
+    test.assert_eq(row_text(g, 1), "DEF")
+    test.assert_eq(row_text(g, 2), "G  ")
+    test.assert_eq(grid.grid_row_wrapped(g, 0), 1)
+    test.assert_eq(grid.grid_row_wrapped(g, 1), 1)
+    test.assert_eq(grid.grid_row_wrapped(g, 2), 0)
+    g = grid.grid_resize(g, 4, 8)
+    test.assert_eq(row_text(g, 0), "ABCDEFG ")
+    grid.grid_drop(g)
+
+// A resize to the size the grid already has returns it unchanged.
+@test
+fn test_resize_to_the_same_size_changes_nothing() [io]
+    var g = lettered_rows(2, 3)
+    g = grid.grid_resize(g, 2, 3)
+    test.assert_eq(col0_letters(g), "AB")
+    test.assert_eq(grid.grid_rows(g), 2)
+    grid.grid_drop(g)
+
+// Reflow that runs out of rows keeps the first rows and drops the rest:
+// a line that wraps to more rows than the grid has is cut at the bottom.
+@test
+fn test_resize_reflow_stops_at_the_last_row() [io]
+    var g = grid.grid_new(2, 6)
+    for ch in [65, 66, 67, 68, 69, 70]
+        g = grid.grid_put_char(var g, ch)
+    g = grid.grid_resize(g, 2, 2)
+    test.assert_eq(row_text(g, 0), "AB")
+    test.assert_eq(row_text(g, 1), "CD")
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    grid.grid_drop(g)
+
+// With the same width, a resize copies cells top-left aligned and
+// clamps the cursor into the new bounds; shrinking drops the rows and
+// columns that no longer fit.
+@test
+fn test_resize_same_width_copies_and_clamps_the_cursor() [io]
+    var g = lettered_rows(4, 4)
+    g = grid.grid_cursor_set(var g, 3, 1)
+    g = grid.grid_resize(g, 2, 4)
+    test.assert_eq(col0_letters(g), "AB")
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    test.assert_eq(grid.grid_cursor_col(g), 1)
+    g = grid.grid_resize(g, 5, 4)
+    test.assert_eq(col0_letters(g), "AB   ")
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    grid.grid_drop(g)
+
+// On the alt screen a resize is a cell copy, not a reflow, and the
+// primary buffer saved behind it is resized too, so leaving the alt
+// screen after the resize shows the primary content at the new size.
+@test
+fn test_resize_on_the_alt_screen_resizes_the_saved_primary() [io]
+    var g = lettered_rows(3, 4)
+    g = grid.grid_cursor_set(var g, 2, 3)
+    g = grid.grid_enter_alt_screen(var g)
+    g = grid.grid_set(g, 0, 0, grid.pack_word0_idx(88, 7, 0))
+    g = grid.grid_resize(g, 2, 2)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 0)), 88)
+    test.assert_eq(grid.grid_rows(g), 2)
+    g = grid.grid_exit_alt_screen(var g)
+    test.assert_eq(col0_letters(g), "AB")
+    test.assert_eq(grid.grid_cols(g), 2)
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    test.assert_eq(grid.grid_cursor_col(g), 1)
+    grid.grid_drop(g)
+
+// A resize on the primary screen resizes an alt buffer allocated
+// earlier, so the next enter finds a buffer of the new size.
+@test
+fn test_resize_on_the_primary_screen_resizes_the_idle_alt_buffer() [io]
+    var g = lettered_rows(2, 3)
+    g = grid.grid_enter_alt_screen(var g)
+    g = grid.grid_exit_alt_screen(var g)
+    g = grid.grid_resize(g, 3, 5)
+    g = grid.grid_enter_alt_screen(var g)
+    g = grid.grid_set(g, 2, 4, grid.pack_word0_idx(88, 7, 0))
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 2, 4)), 88)
+    test.assert_eq(grid.grid_rows(g), 3)
+    grid.grid_drop(g)
+
+// A column-only shrink on the alt screen keeps the cursor row and pulls
+// the column back to the last one that exists.
+@test
+fn test_resize_on_the_alt_screen_clamps_the_cursor_column() [io]
+    var g = grid.grid_new(3, 4)
+    g = grid.grid_enter_alt_screen(var g)
+    g = grid.grid_cursor_set(var g, 2, 3)
+    g = grid.grid_resize(g, 3, 2)
+    test.assert_eq(grid.grid_cursor_row(g), 2)
+    test.assert_eq(grid.grid_cursor_col(g), 1)
+    grid.grid_drop(g)

@@ -14,6 +14,7 @@
 
 use std.test
 use grid
+use sgr
 use parser
 
 // The 256-colour session palette lives in the C runtime.  novo-vte
@@ -254,3 +255,379 @@ fn test_esc_7_8_decsc_decrc() [io]
     test.assert_eq(grid.cell_glyph(grid.grid_get(g1, 1, 2)), 88)
     parser.parser_drop(p)
     grid.grid_drop(g1)
+
+// ── The cursor, editing, mode, colour and string arms ──────────────
+//
+// Each test below feeds one sequence family and asserts the grid the
+// sequence defines in ECMA-48 / xterm `ctlseqs`, not the value the
+// handler happens to return.
+
+// CSI followed by `body`; the tests below read as the sequences they feed.
+fn csi(body: Str) -> Str [io, ffi]
+    str.from_char(27) + "[" + body
+
+// A grid whose row `r` holds the letter 'A' + r in every column, so a
+// test reads which source row ended up where from one column.
+fn lettered_rows(rows: Int, cols: Int) -> grid.Grid [io, ffi, mutate]
+    var g = grid.grid_new(rows, cols)
+    for r in 0..rows
+        for c in 0..cols
+            g = grid.grid_set(g, r, c, grid.pack_word0_idx(65 + r, 7, 0))
+    g
+
+fn col0_letters(g: grid.Grid) -> Str [io, ffi]
+    var s = ""
+    for r in 0..grid.grid_rows(g)
+        s = s + str.from_char(grid.cell_glyph(grid.grid_get(g, r, 0)))
+    s
+
+// CUU / CUD move by the parameter and stop at the first and last row.
+@test
+fn test_csi_cuu_and_cud_move_vertically_and_clamp() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(5, 5), csi("3;3H"))
+    g = feed_str(var p, g, csi("2A"))
+    test.assert_eq(grid.grid_cursor_row(g), 0)
+    test.assert_eq(grid.grid_cursor_col(g), 2)
+    g = feed_str(var p, g, csi("3B"))
+    test.assert_eq(grid.grid_cursor_row(g), 3)
+    g = feed_str(var p, g, csi("9B"))
+    test.assert_eq(grid.grid_cursor_row(g), 4)
+    g = feed_str(var p, g, csi("9A"))
+    test.assert_eq(grid.grid_cursor_row(g), 0)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// HPA (`), HPR (a) and VPR (e): one absolute and two relative moves.
+@test
+fn test_csi_hpa_hpr_vpr_position_the_cursor() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(5, 8), csi("3`"))
+    test.assert_eq(grid.grid_cursor_col(g), 2)
+    g = feed_str(var p, g, csi("2a"))
+    test.assert_eq(grid.grid_cursor_col(g), 4)
+    g = feed_str(var p, g, csi("3e"))
+    test.assert_eq(grid.grid_cursor_row(g), 3)
+    test.assert_eq(grid.grid_cursor_col(g), 4)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// CNL goes down to column 1, CPL up to column 1.
+@test
+fn test_csi_cnl_and_cpl_return_to_column_one() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(6, 6), csi("2;5H"))
+    g = feed_str(var p, g, csi("3E"))
+    test.assert_eq(grid.grid_cursor_row(g), 4)
+    test.assert_eq(grid.grid_cursor_col(g), 0)
+    g = feed_str(var p, g, csi("5;4H") + csi("2F"))
+    test.assert_eq(grid.grid_cursor_row(g), 2)
+    test.assert_eq(grid.grid_cursor_col(g), 0)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// IL inserts blank rows at the cursor and pushes the rest down; DL
+// removes rows at the cursor and pulls the rest up.
+@test
+fn test_csi_il_and_dl_edit_whole_rows() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, lettered_rows(5, 3), csi("2;1H") + csi("2L"))
+    test.assert_eq(col0_letters(g), "A  BC")
+    g = feed_str(var p, g, csi("1M"))
+    test.assert_eq(col0_letters(g), "A BC ")
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// ICH inserts blanks at the cursor and shifts the row right; DCH
+// removes characters and shifts the row left.
+@test
+fn test_csi_ich_and_dch_edit_characters() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(1, 6), "ABCDEF" + csi("1;2H") + csi("2@"))
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 1)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 2)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 3)), 66)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 5)), 68)
+    g = feed_str(var p, g, csi("2P"))
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 1)), 66)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 4)), 32)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 5)), 32)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// SU scrolls the display up, SD down; the rows that enter are blank.
+@test
+fn test_csi_su_and_sd_scroll_the_region() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, lettered_rows(4, 2), csi("2S"))
+    test.assert_eq(col0_letters(g), "CD  ")
+    g = feed_str(var p, g, csi("1T"))
+    test.assert_eq(col0_letters(g), " CD ")
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// DECSTBM confines LF scrolling to the named rows (1-indexed,
+// inclusive); the rows outside keep their content.
+@test
+fn test_csi_decstbm_confines_scrolling() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, lettered_rows(5, 2), csi("2;4r") + csi("4;1H") + "\n")
+    test.assert_eq(col0_letters(g), "ACD E")
+    test.assert_eq(grid.grid_cursor_row(g), 3)
+    // `CSI r` with no parameters names the whole screen again.
+    g = feed_str(var p, g, csi("r") + csi("5;1H") + "\n")
+    test.assert_eq(col0_letters(g), "CD E ")
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// Primary DA answers `CSI ? 62 ; 22 c` (VT220 with colour); secondary
+// DA, marked by `>`, answers `CSI > 0 ; 1 ; 0 c`.
+@test
+fn test_csi_da_primary_and_secondary_replies() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(2, 4), csi("c"))
+    var reply = ""
+    for i in 0..parser.parser_response_count(p)
+        reply = reply + str.from_char(parser.parser_response_byte_at(p, i))
+    test.assert_eq(reply, csi("?62;22c"))
+    parser.parser_response_clear(p)
+    g = feed_str(var p, g, csi(">c"))
+    reply = ""
+    for i in 0..parser.parser_response_count(p)
+        reply = reply + str.from_char(parser.parser_response_byte_at(p, i))
+    test.assert_eq(reply, csi(">0;1;0c"))
+    parser.parser_response_clear(p)
+    // A DSR mode that is neither 5 nor 6 is not answered.
+    g = feed_str(var p, g, csi("7n"))
+    test.assert_eq(parser.parser_response_count(p), 0)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// DECSCUSR needs its SP intermediate; `CSI 4 q` without one is a
+// different sequence and leaves the cursor shape alone.
+@test
+fn test_csi_q_without_space_is_not_decscusr() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(2, 4), csi("4 q"))
+    test.assert_eq(grid.grid_cursor_shape(g), 4)
+    g = feed_str(var p, g, csi("6q"))
+    test.assert_eq(grid.grid_cursor_shape(g), 4)
+    // A final byte the parser has no arm for is dropped whole.
+    g = feed_str(var p, g, csi("5z") + "A")
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 0)), 65)
+    test.assert_eq(grid.grid_cursor_col(g), 1)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// DECAWM off pegs the cursor at the right margin and overwrites the
+// last cell; DECAWM on wraps.  `CSI ? 7 l` / `h` switch between them.
+@test
+fn test_decawm_reset_stops_wrapping() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(2, 3), csi("?7l") + "ABCDE")
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 2)), 69)   // 'E' over 'C'
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 1, 0)), 32)
+    test.assert_eq(grid.grid_cursor_row(g), 0)
+    g = feed_str(var p, g, csi("?7h") + csi("1;1H") + "WXYZ")
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 1, 0)), 90)   // 'Z' wrapped
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// Mouse tracking modes 1000 / 1002 / 1003 / 1006 each own a bit and
+// `l` clears only that bit; an unknown private mode changes nothing.
+@test
+fn test_decset_mouse_modes_set_and_clear_their_bits() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(2, 4), csi("?1000h") + csi("?1002h")
+                                              + csi("?1003h") + csi("?1006h"))
+    test.assert_eq(grid.grid_mouse_mode(g), 15)
+    g = feed_str(var p, g, csi("?1002l"))
+    test.assert_eq(grid.grid_mouse_mode(g), 13)
+    g = feed_str(var p, g, csi("?1000l") + csi("?1003l"))
+    test.assert_eq(grid.grid_mouse_mode(g), 8)
+    g = feed_str(var p, g, csi("?1006l") + csi("?9999h"))
+    test.assert_eq(grid.grid_mouse_mode(g), 0)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// SGR 38 / 48 with `;5;N` take an indexed colour from the 256-colour
+// table: 196 is the cube corner 5,0,0 (0xFF0000), 232 the first grey
+// (0x080808), 12 the bright blue of the ANSI base.
+@test
+fn test_sgr_extended_indexed_colours_set_fg_and_bg() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(1, 4), csi("38;5;196m") + csi("48;5;232m") + "A")
+    test.assert_eq(grid.cell_fg(grid.grid_get(g, 0, 0)), 0xFF0000)
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 0)), 0x080808)
+    g = feed_str(var p, g, csi("48;5;12m") + csi("38;5;12m") + "B")
+    test.assert_eq(grid.cell_fg(grid.grid_get(g, 0, 1)), 0x5555FF)
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 1)), 0x5555FF)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// Direct colour keeps its 24 bits in both spellings: the semicolon
+// form xterm shipped and the colon form of ITU-T T.416.
+@test
+fn test_sgr_truecolor_background_in_both_spellings() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(1, 4), csi("48;2;18;52;86m") + "A")
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 0)), 0x123456)
+    g = feed_str(var p, g, csi("48:2::171:205:239m") + "B")
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 1)), 0xABCDEF)
+    g = feed_str(var p, g, csi("38:2::1:2:3m") + "C")
+    test.assert_eq(grid.cell_fg(grid.grid_get(g, 0, 2)), 0x010203)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// A colour that is cut short is not read as a colour: the introducer is
+// skipped and nothing else changes.  58 (underline colour) is read and
+// dropped, and the parameter after it applies as usual.
+@test
+fn test_sgr_truncated_and_underline_colours() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(1, 4), csi("38;5m") + "A")
+    test.assert_eq(grid.cell_fg(grid.grid_get(g, 0, 0)), grid.default_fg_rgb())
+    g = feed_str(var p, g, csi("58;5;3;1m") + "B")
+    let cell = grid.grid_get(g, 0, 1)
+    test.assert_eq(grid.cell_fg(cell), grid.default_fg_rgb())
+    test.assert_eq(grid.cell_attrs(cell), grid.attr_bold())
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// A default colour handed to the 38 / 48 path returns the session
+// default for that role.  No spelling `ansi-nv` reads yields one, so
+// the private helper is called with the value directly.
+@test
+fn test_extended_default_colour_returns_the_session_default() [io]
+    var g = grid.grid_new(1, 2)
+    g = grid.grid_set_fg(var g, 0x111111)
+    g = grid.grid_set_bg(var g, 0x222222)
+    g = parser.apply_extended_color(var g, 38, sgr.AnsiDefaultColor)
+    test.assert_eq(g.fg, grid.session_default_fg())
+    test.assert_eq(g.bg, 0x222222)
+    g = parser.apply_extended_color(var g, 48, sgr.AnsiDefaultColor)
+    test.assert_eq(g.bg, grid.session_default_bg())
+    grid.grid_drop(g)
+
+// The 4x and 10x families set the background from the base and the
+// bright rows of the palette; 49 returns it to the default; SGR 5
+// (blink) is not in the cell model and changes nothing.
+@test
+fn test_sgr_background_families_and_default() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(1, 4), csi("44m") + "A")
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 0)), 0x0000AA)
+    g = feed_str(var p, g, csi("102m") + "B")
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 1)), 0x55FF55)
+    g = feed_str(var p, g, csi("5m") + "C")
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 2)), 0x55FF55)
+    test.assert_eq(grid.cell_attrs(grid.grid_get(g, 0, 2)), 0)
+    g = feed_str(var p, g, csi("49m") + "D")
+    test.assert_eq(grid.cell_bg(grid.grid_get_w1(g, 0, 3)), grid.default_bg_rgb())
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// HT moves to the next multiple-of-eight stop; BEL does nothing.
+@test
+fn test_ht_advances_to_the_next_stop_and_bel_is_dropped() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(1, 20), "\t")
+    test.assert_eq(grid.grid_cursor_col(g), 8)
+    g = feed_str(var p, g, str.from_char(7))
+    test.assert_eq(grid.grid_cursor_col(g), 8)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// IND moves down and scrolls at the bottom of the region; NEL does the
+// same and returns to column 1; RI moves up and scrolls down at the top.
+@test
+fn test_esc_ind_nel_ri_move_and_scroll() [io]
+    var p = parser.parser_new()
+    let e = str.from_char(27)
+    var g = feed_str(var p, lettered_rows(3, 4), csi("1;3H") + e + "D")
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    test.assert_eq(grid.grid_cursor_col(g), 2)
+    g = feed_str(var p, g, csi("3;3H") + e + "D")
+    test.assert_eq(col0_letters(g), "BC ")
+    test.assert_eq(grid.grid_cursor_row(g), 2)
+    g = feed_str(var p, g, csi("1;3H") + e + "E")
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    test.assert_eq(grid.grid_cursor_col(g), 0)
+    g = feed_str(var p, g, csi("3;3H") + e + "E")
+    test.assert_eq(col0_letters(g), "C  ")
+    test.assert_eq(grid.grid_cursor_row(g), 2)
+    test.assert_eq(grid.grid_cursor_col(g), 0)
+    g = feed_str(var p, g, csi("3;2H") + e + "M")
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    test.assert_eq(grid.grid_cursor_col(g), 1)
+    g = feed_str(var p, g, csi("1;1H") + e + "M")
+    test.assert_eq(col0_letters(g), " C ")
+    // ESC = (DECPAM) is consumed without effect.
+    g = feed_str(var p, g, e + "=")
+    test.assert_eq(grid.grid_cursor_row(g), 0)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// DCS strings are consumed to their terminator and change nothing; the
+// text after the terminator prints normally.
+@test
+fn test_dcs_string_is_consumed_to_its_terminator() [io]
+    var p = parser.parser_new()
+    let e = str.from_char(27)
+    var g = feed_str(var p, grid.grid_new(1, 6), e + "P1\$qm" + e + "\\" + "AB")
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 0)), 65)
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 1)), 66)
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// A parameter past the ceiling is refused and the sequence dropped: the
+// screen is untouched, no OSC refusal is recorded, and the next byte
+// prints.
+@test
+fn test_oversized_csi_parameter_is_dropped_without_effect() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(1, 4), csi("99999C") + "A")
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 0)), 65)
+    test.assert_eq(grid.grid_cursor_col(g), 1)
+    test.assert_eq(parser.parser_osc_pending(p), false)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// Each partial sequence parks the machine in the state the documented
+// codes name for it.
+@test
+fn test_parser_state_for_every_open_sequence() [io]
+    let e = str.from_char(27)
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(1, 4), e + "(")
+    test.assert_eq(parser.parser_state(p), parser.st_esc())
+    g = feed_str(var p, g, "B")
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    g = feed_str(var p, g, csi("1"))
+    test.assert_eq(parser.parser_state(p), parser.st_csi_param())
+    g = feed_str(var p, g, "$")
+    test.assert_eq(parser.parser_state(p), parser.st_csi_param())
+    g = feed_str(var p, g, "1")   // a parameter after an intermediate: ignored
+    test.assert_eq(parser.parser_state(p), parser.st_csi_param())
+    g = feed_str(var p, g, "m")
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    g = feed_str(var p, g, e + "P1")
+    test.assert_eq(parser.parser_state(p), parser.st_dcs_string())
+    g = feed_str(var p, g, "q")
+    test.assert_eq(parser.parser_state(p), parser.st_dcs_string())
+    g = feed_str(var p, g, e + "\\")
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    g = feed_str(var p, g, e + "X")   // SOS
+    test.assert_eq(parser.parser_state(p), parser.st_dcs_string())
+    g = feed_str(var p, g, e + "\\")
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    // 0xC3 opens a two-byte UTF-8 character; 0xA9 closes it (U+00E9).
+    g = parser.parser_feed_byte(var p, var g, 195)
+    test.assert_eq(parser.parser_state(p), parser.st_utf8_cont())
+    g = parser.parser_feed_byte(var p, var g, 169)
+    test.assert_eq(parser.parser_state(p), parser.st_ground())
+    test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 0)), 233)
+    parser.parser_drop(p)
+    grid.grid_drop(g)

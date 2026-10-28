@@ -16,6 +16,8 @@ changes what a host that pushed them through `window.nv` calls.  Below
 `1.0.0` that is the reason for the minor number; the entry is the first
 one under Unreleased, with the callers it touches.
 
+The test suites cover every line under `src/`.
+
 ## 0.3.1 — 2026-09-26
 
 The functions that build a list or a buffer in place declare the name
