@@ -631,3 +631,29 @@ fn test_parser_state_for_every_open_sequence() [io]
     test.assert_eq(grid.cell_glyph(grid.grid_get(g, 0, 0)), 233)
     parser.parser_drop(p)
     grid.grid_drop(g)
+
+// A count of 0 is 1 (xterm; ECMA-48 default).
+@test
+fn test_zero_count_is_one() [io]
+    var p = parser.parser_new()
+    let e = str.from_char(27)
+    var g = feed_str(var p, grid.grid_new(6, 6), e + "[3;3H" + e + "[0A")
+    test.assert_eq(grid.grid_cursor_row(g), 1)
+    g = feed_str(var p, g, e + "[0C")
+    test.assert_eq(grid.grid_cursor_col(g), 3)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// DECSTBM homes the cursor when the margins are accepted, not when refused.
+@test
+fn test_decstbm_homes_the_cursor() [io]
+    var p = parser.parser_new()
+    let e = str.from_char(27)
+    var g = feed_str(var p, grid.grid_new(6, 6), e + "[3;3H" + e + "[2;4r")
+    test.assert_eq(grid.grid_cursor_row(g), 0)
+    test.assert_eq(grid.grid_cursor_col(g), 0)
+    g = feed_str(var p, g, e + "[3;3H" + e + "[9;12r")
+    test.assert_eq(grid.grid_cursor_row(g), 2)
+    test.assert_eq(grid.grid_cursor_col(g), 2)
+    parser.parser_drop(p)
+    grid.grid_drop(g)

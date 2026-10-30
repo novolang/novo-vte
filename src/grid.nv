@@ -1531,14 +1531,22 @@ fn row_content_len(cells: Int, cols: Int, row: Int) -> Int
 // Caller's responsibility to:
 //   - pre-blank new_cells (alloc_blank_cells does this)
 //   - pre-zero new_wrap (caller's grid_new / re-alloc)
-// Returns the final (new_r, new_c) packed as (new_r << 32) |
-// (new_c & 0xffffffff) so the caller can land the cursor at
-// the logical position the resize finishes on — without this
-// the cursor floats to the top-left every reflow.
+// Returns the new position of the cell the old cursor stood on, packed
+// as (new_r << 32) | (new_c & 0xffffffff), so the cursor follows its
+// text through the re-wrap.  A cursor past the end of its row's text
+// keeps its distance from the text.  A cursor whose row the walk never
+// reaches (the new grid is shorter) lands on the last new row at its
+// old column, clamped to the new width.
 fn reflow_cells(old_cells: Int, old_cols: Int, old_rows: Int, old_wrap: Int, new_cells: Int,
-                new_cols: Int, new_rows: Int, new_wrap: Int) -> Int
+                new_cols: Int, new_rows: Int, new_wrap: Int, cur_r: Int, cur_c: Int) -> Int
     var new_r = 0
     var new_c = 0
+    var found = false
+    var out_r = new_rows - 1
+    var out_c = if cur_c < new_cols
+        cur_c
+    else
+        new_cols - 1
     var old_r = 0
     while old_r < old_rows and new_r < new_rows
         let wrapped = array_i64_get(old_wrap, old_r)
@@ -1550,6 +1558,10 @@ fn reflow_cells(old_cells: Int, old_cols: Int, old_rows: Int, old_wrap: Int, new
         while i < content_len and new_r < new_rows
             let s_idx = (old_r * old_cols + i) * 2
             let d_idx = (new_r * new_cols + new_c) * 2
+            if old_r == cur_r and i == cur_c
+                out_r = new_r
+                out_c = new_c
+                found = true
             array_i64_set(new_cells, d_idx,
                       array_i64_get(old_cells, s_idx))
             array_i64_set(new_cells, d_idx + 1,
@@ -1560,19 +1572,18 @@ fn reflow_cells(old_cells: Int, old_cols: Int, old_rows: Int, old_wrap: Int, new
                 new_r = new_r + 1
                 new_c = 0
             i = i + 1
+        if old_r == cur_r and not found and new_r < new_rows
+            // The cursor stands past the text of its row.
+            out_r = new_r
+            out_c = new_c + cur_c - content_len
+            if out_c >= new_cols
+                out_c = new_cols - 1
+            found = true
         if wrapped == 0
             new_r = new_r + 1
             new_c = 0
         old_r = old_r + 1
-    // Clamp the end-position to the buffer bounds before packing.
-    let pr = if new_r >= new_rows
-        new_rows - 1
-    else
-        new_r
-    // `new_c` is below `new_cols` here: a row that fills the new width
-    // either advances `new_r` or, when it is the last cell of a short
-    // row, is reset to 0 by the line break after the inner loop.
-    int.shl(pr, 32) + (new_c & 4294967295)
+    int.shl(out_r, 32) + (out_c & 4294967295)
 
 // Copy `old_cells` into `new_cells` cell-by-cell, top-left
 // aligned, clipping at the smaller of (old_rows/cols,
@@ -1644,7 +1655,8 @@ pub fn grid_resize(g: Grid, new_rows: Int, new_cols: Int) -> Grid
             copy_cells(g.cells, g.cols, new_active, new_cols, copy_r, copy_c)
         else
             let end_packed = reflow_cells(g.cells, g.cols, g.rows, g.wrap_flags,
-                                     new_active, new_cols, new_rows, new_wrap)
+                                     new_active, new_cols, new_rows, new_wrap,
+                                     g.cursor_row, g.cursor_col)
             reflow_cur_r = int.shr_logical(end_packed, 32)
             reflow_cur_c = end_packed & 4294967295
         array_i64_drop(g.cells)

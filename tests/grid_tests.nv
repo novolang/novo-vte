@@ -275,15 +275,10 @@ fn test_grid_resize_grow_preserves_content() [io]
     test.assert_eq(grid.cell_glyph(grid.grid_get(g3, 3, 4)), 32)
     grid.grid_drop(g3)
 
-// DISABLED — needs a decision, not a fix.  The test asserts that a
-// shrink CLAMPS the cursor into the new bounds ((2,4) in a 3x5 grid ->
-// (1,2) in a 2x3).  The row clamps; the column comes back 0.  That may
-// be correct: grid_resize now does wrapped-line reflow, and a reflowing
-// resize recomputes the cursor from content rather than clamping it.
-// Which contract is intended is not written down anywhere, and guessing
-// would just enshrine whichever answer the code happens to give.
-// Pre-dates the in-place-grid change.
-fn disabled_test_grid_resize_shrink_clamps_cursor() [io, ffi]
+// A shrink clamps a cursor that stands on a blank row below the text into
+// the new bounds: (2,4) in a 3x5 grid is (1,2) in a 2x3.
+@test
+fn test_grid_resize_shrink_clamps_cursor() [io, ffi]
     var g0 = grid.grid_new(3, 5)
     let g1 = grid.grid_cursor_set(var g0, 2, 4)   // cursor at far corner
     var g2 = grid.grid_resize(g1, 2, 3)
@@ -952,4 +947,39 @@ fn test_resize_on_the_alt_screen_clamps_the_cursor_column() [io]
     g = grid.grid_resize(g, 3, 2)
     test.assert_eq(grid.grid_cursor_row(g), 2)
     test.assert_eq(grid.grid_cursor_col(g), 1)
+    grid.grid_drop(g)
+
+// The cursor follows the text through a re-wrap: after 'G' of a line
+// that wrapped at 4 columns, a widening rejoins the line and the cursor
+// stays after 'G'.
+@test
+fn test_resize_keeps_the_cursor_on_the_content() [io]
+    var g = grid.grid_new(4, 4)
+    for ch in [65, 66, 67, 68, 69, 70, 71]
+        g = grid.grid_put_char(var g, ch)
+    g = grid.grid_resize(g, 4, 8)
+    test.assert_eq(grid.grid_cursor_row(g), 0)
+    test.assert_eq(grid.grid_cursor_col(g), 7)
+    grid.grid_drop(g)
+
+@test
+fn test_resize_narrow_keeps_the_cursor_on_the_content() [io]
+    var g = grid.grid_new(4, 4)
+    for ch in [65, 66, 67, 68, 69, 70, 71]
+        g = grid.grid_put_char(var g, ch)
+    g = grid.grid_resize(g, 4, 3)
+    test.assert_eq(grid.grid_cursor_row(g), 2)
+    test.assert_eq(grid.grid_cursor_col(g), 1)
+    grid.grid_drop(g)
+
+// A cursor on a text cell (not past the text) is tracked at copy time.
+@test
+fn test_resize_cursor_on_a_text_cell() [io]
+    var g = grid.grid_new(4, 4)
+    for ch in [65, 66, 67, 68, 69, 70, 71]
+        g = grid.grid_put_char(var g, ch)
+    g = grid.grid_cursor_set(var g, 0, 2)
+    g = grid.grid_resize(g, 4, 8)
+    test.assert_eq(grid.grid_cursor_row(g), 0)
+    test.assert_eq(grid.grid_cursor_col(g), 2)
     grid.grid_drop(g)

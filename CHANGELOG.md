@@ -4,6 +4,14 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.4.1 — unreleased
+
+### Fixed
+
+- DECSTBM homes the cursor to (0, 0) when the margins are accepted, as the VT100 and xterm do.
+- A count of 0 in CUU, CUD, CUF, CUB, CNL, CPL, HPR, VPR, ICH, DCH, IL, DL, ECH, SU and SD is read as 1, as xterm does.
+- A resize that changes the column count keeps the cursor on the cell it stood on in the reflowed text, where it went to the bottom row.
+
 ## 0.4.0 — 2026-10-28
 
 The package builds with no migration warning under toolchain 0.22.0 and

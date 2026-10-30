@@ -429,7 +429,22 @@ fn csi_dsr(p: Parser, g: Grid, a: vtcore.AnsiParser) -> Grid
 fn csi_set_scroll_region(g: Grid, a: vtcore.AnsiParser) -> Grid
     let top = vtparse.param_at(a, 0, 1) - 1
     let bot = vtparse.param_at(a, 1, g.rows) - 1
-    grid.grid_set_scroll_region(g, top, bot)
+    let t = if top < 0
+        0
+    else
+        top
+    let b = if bot >= g.rows
+        g.rows - 1
+    else
+        bot
+    let accepted = t < g.rows and t <= b
+    var moved = grid.grid_set_scroll_region(g, top, bot)
+    // The VT100 and xterm home the cursor when the margins are accepted;
+    // origin mode (DECOM) is not modelled, so home is (0, 0).
+    if accepted
+        grid.grid_cursor_set(var moved, 0, 0)
+    else
+        moved
 
 // 'q' (0x71) with SPACE intermediate = DECSCUSR (set cursor style).
 // vim / nvim send this on mode change so the cursor shape mirrors the
@@ -445,6 +460,16 @@ fn csi_set_cursor_style(g: Grid, a: vtcore.AnsiParser) -> Grid
     else
         g
 
+// The repeat count of a cursor-motion or editing sequence.  ECMA-48 gives
+// these functions the default 1, and xterm reads an explicit 0 as the
+// default as well, so a value below 1 is 1.
+fn count_param(a: vtcore.AnsiParser) -> Int
+    let n = vtparse.param_at(a, 0, 1)
+    if n < 1
+        1
+    else
+        n
+
 fn dispatch_csi(p: Parser, var g: Grid, a: vtcore.AnsiParser, final_byte: Int) -> Grid
     // DEC private-mode dispatch — `\e[?Nh` (DECSET) and `\e[?Nl`
     // (DECRST).  `vtparse` keeps the '?' apart from the intermediate
@@ -455,16 +480,16 @@ fn dispatch_csi(p: Parser, var g: Grid, a: vtcore.AnsiParser, final_byte: Int) -
         dispatch_private_mode(var g, a, final_byte == 104)
     // 'A' (0x41) = CUU — cursor up
     else if final_byte == 65
-        grid.grid_cursor_move(var g, 0 - vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_move(var g, 0 - count_param(a), 0)
     // 'B' (0x42) = CUD — cursor down
     else if final_byte == 66
-        grid.grid_cursor_move(var g, vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_move(var g, count_param(a), 0)
     // 'C' (0x43) = CUF — cursor forward
     else if final_byte == 67
-        grid.grid_cursor_move(var g, 0, vtparse.param_at(a, 0, 1))
+        grid.grid_cursor_move(var g, 0, count_param(a))
     // 'D' (0x44) = CUB — cursor backward
     else if final_byte == 68
-        grid.grid_cursor_move(var g, 0, 0 - vtparse.param_at(a, 0, 1))
+        grid.grid_cursor_move(var g, 0, 0 - count_param(a))
     // 'H' (0x48) and 'f' (0x66) = CUP / HVP — absolute set.
     // Params are 1-indexed; convert to 0-indexed for the grid.
     else if final_byte == 72 or final_byte == 102
@@ -479,21 +504,21 @@ fn dispatch_csi(p: Parser, var g: Grid, a: vtcore.AnsiParser, final_byte: Int) -
         grid.grid_erase_line(var g, vtparse.param_at(a, 0, 0))
     // 'L' (0x4C) = IL — insert N lines (default 1)
     else if final_byte == 76
-        grid.grid_insert_lines(g, vtparse.param_at(a, 0, 1))
+        grid.grid_insert_lines(g, count_param(a))
     // 'M' (0x4D) = DL — delete N lines (default 1)
     else if final_byte == 77
-        grid.grid_delete_lines(g, vtparse.param_at(a, 0, 1))
+        grid.grid_delete_lines(g, count_param(a))
     // '@' (0x40) = ICH — insert N blank chars (default 1)
     else if final_byte == 64
-        grid.grid_insert_chars(g, vtparse.param_at(a, 0, 1))
+        grid.grid_insert_chars(g, count_param(a))
     // 'P' (0x50) = DCH — delete N chars (default 1)
     else if final_byte == 80
-        grid.grid_delete_chars(g, vtparse.param_at(a, 0, 1))
+        grid.grid_delete_chars(g, count_param(a))
     // 'X' (0x58) = ECH — erase N chars in place (default 1).
     // Pane-aware clear: writes blanks without moving cursor and
     // without extending past the requested count.
     else if final_byte == 88
-        grid.grid_erase_chars(g, vtparse.param_at(a, 0, 1))
+        grid.grid_erase_chars(g, count_param(a))
     // 'd' (0x64) = VPA — vertical position absolute (1-indexed)
     else if final_byte == 100
         grid.grid_cursor_set(var g, vtparse.param_at(a, 0, 1) - 1, g.cursor_col)
@@ -505,22 +530,22 @@ fn dispatch_csi(p: Parser, var g: Grid, a: vtcore.AnsiParser, final_byte: Int) -
         grid.grid_cursor_set(var g, g.cursor_row, vtparse.param_at(a, 0, 1) - 1)
     // 'a' (0x61) = HPR — horizontal position relative (right N)
     else if final_byte == 97
-        grid.grid_cursor_move(var g, 0, vtparse.param_at(a, 0, 1))
+        grid.grid_cursor_move(var g, 0, count_param(a))
     // 'e' (0x65) = VPR — vertical position relative (down N)
     else if final_byte == 101
-        grid.grid_cursor_move(var g, vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_move(var g, count_param(a), 0)
     // 'E' (0x45) = CNL — cursor next line (col=0, row+N)
     else if final_byte == 69
-        grid.grid_cursor_set(var g, g.cursor_row + vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_set(var g, g.cursor_row + count_param(a), 0)
     // 'F' (0x46) = CPL — cursor previous line (col=0, row-N)
     else if final_byte == 70
-        grid.grid_cursor_set(var g, g.cursor_row - vtparse.param_at(a, 0, 1), 0)
+        grid.grid_cursor_set(var g, g.cursor_row - count_param(a), 0)
     // 'S' (0x53) = SU — scroll up N (default 1)
     else if final_byte == 83
-        grid.grid_scroll_region_up(g, vtparse.param_at(a, 0, 1))
+        grid.grid_scroll_region_up(g, count_param(a))
     // 'T' (0x54) = SD — scroll down N (default 1)
     else if final_byte == 84
-        grid.grid_scroll_region_down(g, vtparse.param_at(a, 0, 1))
+        grid.grid_scroll_region_down(g, count_param(a))
     // 'c' (0x63) = DA — Device Attributes query (see csi_da)
     else if final_byte == 99
         csi_da(p, g, a)
