@@ -21,7 +21,9 @@
 //            r (DECSTBM), m (SGR), c (DA), n (DSR), q (DECSCUSR).
 //   CSI ? h/l   7 (DECAWM), 25 (DECTCEM), 47 / 1047 / 1049
 //            (alt screen), 1000 / 1002 / 1003 / 1006 (mouse
-//            tracking), 2004 (bracketed paste).
+//            tracking), 2004 (bracketed paste), 2026 (synchronized
+//            update).
+//   CSI ? Ps $ p   DECRQM, answered with DECRPM for the modes above.
 //   OSC      accumulated into the `osc` side-array and handed to the
 //            caller to dispatch; this module does not act on it.
 //
@@ -423,6 +425,36 @@ fn csi_dsr(p: Parser, g: Grid, a: vtcore.AnsiParser) -> Grid
                                     grid.grid_cursor_col(g) + 1))
     g
 
+// DECRQM for a DEC private mode, `CSI ? Ps $ p`.  The reply is DECRPM,
+// `CSI ? Ps ; Pm $ y`, with Pm 1 for a mode that is set, 2 for one that
+// is reset and 0 for one this terminal does not know.  The modes it
+// knows are the ones dispatch_private_mode keeps state for and a program
+// asks about: ?7 autowrap, ?25 cursor visible, ?1049 alternate screen,
+// ?2004 bracketed paste and ?2026 synchronized update.  An application
+// asks ?2026 before it wraps its repaints in the markers.
+fn csi_decrqm(p: Parser, g: Grid, a: vtcore.AnsiParser) -> Grid
+    let n = vtparse.param_at(a, 0, 0)
+    let state = if n == 7
+        grid.grid_autowrap(g)
+    else if n == 25
+        grid.grid_cursor_visible(g)
+    else if n == 1049
+        grid.grid_on_alt_screen(g)
+    else if n == 2004
+        grid.grid_bracketed_paste(g)
+    else if n == 2026
+        grid.grid_sync_update(g)
+    else
+        0 - 1
+    let setting = if state < 0
+        AnsiModeUnknown
+    else if state == 1
+        AnsiModeIsSet
+    else
+        AnsiModeIsReset
+    response_append_reply(p, AnsiModeReply(n, setting))
+    g
+
 // 'r' (0x72) = DECSTBM — set top/bottom margins (scroll region).
 // Params are 1-indexed inclusive.  No params = full grid; first param
 // missing or 1 = top of grid; second omitted = bottom of grid.
@@ -478,6 +510,10 @@ fn dispatch_csi(p: Parser, var g: Grid, a: vtcore.AnsiParser, final_byte: Int) -
     // on and drops the rest.
     if vtparse.private_marker_of(a) == 63 and (final_byte == 104 or final_byte == 108)
         dispatch_private_mode(var g, a, final_byte == 104)
+    // 'p' (0x70) with '?' and the '$' intermediate = DECRQM — request
+    // the state of a DEC private mode (see csi_decrqm)
+    else if final_byte == 112 and vtparse.private_marker_of(a) == 63 and vtparse.intermediate_at(a, 0) == 36
+        csi_decrqm(p, g, a)
     // 'A' (0x41) = CUU — cursor up
     else if final_byte == 65
         grid.grid_cursor_move(var g, 0 - count_param(a), 0)
@@ -569,7 +605,8 @@ fn dispatch_csi(p: Parser, var g: Grid, a: vtcore.AnsiParser, final_byte: Int) -
 //
 // Modes acted on: 7 (DECAWM), 25 (DECTCEM), 47 / 1047 / 1049
 // (alt screen), 1000 / 1002 / 1003 / 1006 (mouse tracking) and
-// 2004 (bracketed paste).  Anything else falls through the final
+// 2004 (bracketed paste) and 2026 (synchronized update).  Anything
+// else falls through the final
 // `else` and is discarded, which is the correct response for an
 // unimplemented private mode: silently ignore rather than emit.
 //
@@ -600,6 +637,12 @@ fn dispatch_private_mode(var g: Grid, a: vtcore.AnsiParser, set: Bool) -> Grid
     // the flag.
     else if n == 2004
         grid.grid_set_bracketed_paste(g, set)
+    // Synchronized update (n=2026): an app wraps one repaint in
+    // `?2026h` … `?2026l` so the terminal shows the finished frame and
+    // not the half-painted cells in between.  The parser tracks the
+    // flag; the renderer decides when to present.
+    else if n == 2026
+        grid.grid_set_sync_update(g, set)
     // Mouse tracking modes — flip individual bits in the grid's
     // mouse_mode bitmask.  render.nv's mouse handlers check it
     // and forward CSI sequences to the PTY when set (instead of

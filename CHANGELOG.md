@@ -6,6 +6,12 @@ registry](https://novo-lang.org/docs/registry/semver.html).
 
 ## 0.4.1 — unreleased
 
+### Added
+
+- DECSET and DECRST 2026 (synchronized update) are tracked; `grid_sync_update` reports whether an update is open, so a renderer can hold a frame back until the end marker.
+- DECRQM for a DEC private mode (`CSI ? Ps $ p`) is answered with DECRPM for ?7, ?25, ?1049, ?2004 and ?2026 (1 set, 2 reset) and with 0 for any other mode.
+- `grid_resize_guard` and `grid_sync_since`: two stamps the renderer owns.  While the resize guard is up on the alternate screen a character at the right margin does not wrap.
+
 ### Fixed
 
 - DECSTBM homes the cursor to (0, 0) when the margins are accepted, as the VT100 and xterm do.

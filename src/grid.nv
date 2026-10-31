@@ -388,8 +388,41 @@ pub struct Grid
 //                              re-assert of the default block 2,
 //                              and emitting every frame floods the
 //                              stream with `CSI Ps SP q`).
+//  17  sync_update           — synchronized update (DECSET/RST
+//                              ?2026).  1 while the app has an
+//                              update open: it is repainting and
+//                              the grid is in between two
+//                              complete frames.  A renderer holds
+//                              its presentation back while it is
+//                              set and shows the grid when the app
+//                              clears it, so a repaint that arrives
+//                              in several reads is shown whole.
+//  18  sync_since            — the renderer's own stamp, in
+//                              milliseconds, of when it first held a
+//                              frame back for slot 17; 0 when it is
+//                              not holding.  The parser never writes
+//                              it.  It lives here so it follows the
+//                              window's grid through the pump loops
+//                              without a parallel list.
+//  19  resize_guard          — the renderer's own stamp, in
+//                              milliseconds, of a grid resize whose
+//                              guard is still up; 0 when none.  While
+//                              it is up and the alternate screen is
+//                              active, a character written at the right
+//                              margin does not wrap (see `wraps_now`).
+//                              A full-screen application positions every
+//                              row with CUP and repaints on SIGWINCH,
+//                              so what it wrote for the old width and
+//                              what is still in the pty when the grid
+//                              shrinks would otherwise wrap onto column
+//                              0 of the next row until its repaint
+//                              arrives.  A clear cannot end the guard:
+//                              the old width's last repaint may start
+//                              after the resize and clear first.  The
+//                              renderer clears it after a short timeout.
+//                              The parser never sets it.
 fn alt_meta_slots() -> Int
-    17
+    20
 
 // Side-array layout for the scrollback ring buffer + view state.
 // Capacity is a fixed 1000 lines: the ring is allocated once at
@@ -837,7 +870,7 @@ pub fn grid_put_char(var g: Grid, glyph: Int) -> Grid
         // cursor by 2 rows (the eager wrap plus the LF), shifting every
         // row below it by one — visible as doubled blank lines in any
         // full-screen app that fills rows to the right margin.
-        let g0 = if grid_wrap_pending(g) == 1 and grid_autowrap(g) == 1
+        let g0 = if grid_wrap_pending(g) == 1 and wraps_now(g)
             // Mark the row we're about to wrap OUT of as a
             // soft-wrap continuation so grid_resize can rejoin the
             // logical line later.  Set BEFORE the scroll-up so the
@@ -863,8 +896,7 @@ pub fn grid_put_char(var g: Grid, glyph: Int) -> Grid
         if next_col >= g.cols
             // DECAWM off: peg at right margin without setting wrap-
             // pending — subsequent writes overwrite this same cell.
-            let aw = grid_autowrap(g2)
-            if aw == 0
+            if not wraps_now(g2)
                 grid_cursor_set(var g2, g2.cursor_row, g.cols - 1)
             else
                 // DECAWM on: set wrap-pending and keep cursor at cols-1.
@@ -953,6 +985,45 @@ pub fn grid_cursor_visible(g: Grid) -> Int
 pub fn grid_set_cursor_visible(g: Grid, on: Bool) -> Grid
     array_i64_set(g.alt_meta, 15, (if on then 1 else 0))
     g
+
+// Synchronized-update state (DECSET/RST ?2026).  1 while an app has an
+// update open.  A renderer that presents grids reads it to hold a frame
+// back, and must bound the wait: an app that dies or loses its end
+// marker would otherwise leave the display frozen.
+pub fn grid_sync_update(g: Grid) -> Int
+    array_i64_get(g.alt_meta, 17)
+
+// Open or close a synchronized update — the state DECSET/RST ?2026 carries.
+pub fn grid_set_sync_update(g: Grid, on: Bool) -> Grid
+    array_i64_set(g.alt_meta, 17, (if on then 1 else 0))
+    g
+
+// The renderer's hold stamp (slot 18), read and written by the pump that
+// owns the window; see the slot layout.
+pub fn grid_sync_since(g: Grid) -> Int
+    array_i64_get(g.alt_meta, 18)
+
+pub fn grid_set_sync_since(g: Grid, ms: Int) -> Grid
+    array_i64_set(g.alt_meta, 18, ms)
+    g
+
+// The renderer's resize guard stamp (slot 19); see the slot layout.
+pub fn grid_resize_guard(g: Grid) -> Int
+    array_i64_get(g.alt_meta, 19)
+
+pub fn grid_set_resize_guard(g: Grid, ms: Int) -> Grid
+    array_i64_set(g.alt_meta, 19, ms)
+    g
+
+// Whether a character written at the right margin wraps now: DECAWM is
+// on, and no resize guard holds it back on the alternate screen.
+fn wraps_now(g: Grid) -> Bool
+    grid_autowrap(g) == 1 and not (array_i64_get(g.alt_meta, 19) != 0 and array_i64_get(g.alt_meta, 2) == 1)
+
+// Whether the alternate screen is the active one (slot 2).  Read by the
+// parser to answer a DECRQM query for ?1049.
+pub fn grid_on_alt_screen(g: Grid) -> Int
+    array_i64_get(g.alt_meta, 2)
 
 // DECSCUSR forward latch.  The parser marks this when an app emits
 // `CSI Ps SP q`; the renderer reads it to forward the new shape and
