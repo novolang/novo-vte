@@ -201,6 +201,11 @@ novo test src/grid.nv                # the documented examples in grid
 novo test src/parser.nv              # the documented examples in parser
 ```
 
+The library has no `ffi` row and no extern of its own.  The parser suite
+re-declares one runtime extern with `@ffi`, `novo_term_palette_lookup`, to
+check the 256-colour palette against the runtime's table, and that
+declaration is private to `tests/parser_tests.nv`.
+
 The suite drives the parser a byte at a time and reads the grid back,
 so a failure names the escape sequence that produced the wrong cell.
 Every public function is named by one of these tests, and the examples

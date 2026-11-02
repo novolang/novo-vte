@@ -28,7 +28,7 @@ fn palette_lookup_h(idx: Int) -> Int [io, ffi]
 // Helper: feed each byte of `s` through the parser, return the
 // final Grid.  Reads stay on the same row throughout — these
 // tests favor short fixed-size grids for easy assertion.
-fn feed_str(var p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, ffi, mutate]
+fn feed_str(var p: parser.Parser, g: grid.Grid, s: Str) -> grid.Grid [io, mutate]
     let n = str.len(s)
     var g_acc = g
     for i in 0..n
@@ -263,19 +263,19 @@ fn test_esc_7_8_decsc_decrc() [io]
 // handler happens to return.
 
 // CSI followed by `body`; the tests below read as the sequences they feed.
-fn csi(body: Str) -> Str [io, ffi]
+fn csi(body: Str) -> Str [io]
     str.from_char(27) + "[" + body
 
 // A grid whose row `r` holds the letter 'A' + r in every column, so a
 // test reads which source row ended up where from one column.
-fn lettered_rows(rows: Int, cols: Int) -> grid.Grid [io, ffi, mutate]
+fn lettered_rows(rows: Int, cols: Int) -> grid.Grid [io, mutate]
     var g = grid.grid_new(rows, cols)
     for r in 0..rows
         for c in 0..cols
             g = grid.grid_set(g, r, c, grid.pack_word0_idx(65 + r, 7, 0))
     g
 
-fn col0_letters(g: grid.Grid) -> Str [io, ffi]
+fn col0_letters(g: grid.Grid) -> Str [io]
     var s = ""
     for r in 0..grid.grid_rows(g)
         s = s + str.from_char(grid.cell_glyph(grid.grid_get(g, r, 0)))
@@ -655,5 +655,60 @@ fn test_decstbm_homes_the_cursor() [io]
     g = feed_str(var p, g, e + "[3;3H" + e + "[9;12r")
     test.assert_eq(grid.grid_cursor_row(g), 2)
     test.assert_eq(grid.grid_cursor_col(g), 2)
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// The reply a feed left in the parser, as text.
+fn reply_text(p: parser.Parser) -> Str [io]
+    var reply = ""
+    for i in 0..parser.parser_response_count(p)
+        reply = reply + str.from_char(parser.parser_response_byte_at(p, i))
+    reply
+
+// `CSI body $ p`, the DECRQM request; the dollar sign is spelled as a
+// character because `$` begins an interpolation inside a string.
+fn rqm(body: Str) -> Str [io]
+    csi(body) + str.from_char(36) + "p"
+
+// `CSI body $ y`, the DECRPM reply.
+fn rpm(body: Str) -> Str [io]
+    csi(body) + str.from_char(36) + "y"
+
+// DECRQM, `CSI ? Ps $ p`: each mode the parser keeps state for answers
+// set (1) or reset (2), and a mode it does not know answers 0.
+@test
+fn test_csi_decrqm_answers_the_state_of_each_known_mode() [io]
+    var p = parser.parser_new()
+    var g = feed_str(var p, grid.grid_new(2, 4), rqm("?7"))
+    test.assert_eq(reply_text(p), rpm("?7;1"))
+    parser.parser_response_clear(p)
+    g = feed_str(var p, g, rqm("?25"))
+    test.assert_eq(reply_text(p), rpm("?25;1"))
+    parser.parser_response_clear(p)
+    g = feed_str(var p, g, rqm("?1049"))
+    test.assert_eq(reply_text(p), rpm("?1049;2"))
+    parser.parser_response_clear(p)
+    g = feed_str(var p, g, rqm("?2004"))
+    test.assert_eq(reply_text(p), rpm("?2004;2"))
+    parser.parser_response_clear(p)
+    g = feed_str(var p, g, rqm("?2026"))
+    test.assert_eq(reply_text(p), rpm("?2026;2"))
+    parser.parser_response_clear(p)
+    g = feed_str(var p, g, rqm("?9999"))
+    test.assert_eq(reply_text(p), rpm("?9999;0"))
+    parser.parser_response_clear(p)
+    // Opening a synchronized update flips the answer for ?2026.
+    g = feed_str(var p, g, csi("?2026h"))
+    g = feed_str(var p, g, rqm("?2026"))
+    test.assert_eq(reply_text(p), rpm("?2026;1"))
+    parser.parser_drop(p)
+    grid.grid_drop(g)
+
+// A top margin of 0 is read as the first row, the same as 1.
+@test
+fn test_csi_decstbm_with_a_zero_top_margin_starts_at_the_first_row() [io]
+    var p = parser.parser_new()
+    let g = feed_str(var p, lettered_rows(5, 2), csi("0;3r") + csi("3;1H") + "\n")
+    test.assert_eq(col0_letters(g), "BC DE")
     parser.parser_drop(p)
     grid.grid_drop(g)

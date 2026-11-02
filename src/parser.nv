@@ -897,8 +897,7 @@ pub fn parser_feed_byte(var p: Parser, var g: Grid, b: Int) -> Grid [mutate]
 // one bad byte from wedging a terminal.  The one refusal that outlives
 // its byte is an OSC payload past its ceiling: the string ends normally
 // afterwards, so the refusal is recorded and read again at the end.
-fn apply_action(p: Parser, var g: Grid, a: vtcore.AnsiParser,
-                act: vtparse.AnsiAction) -> Grid
+fn apply_action(p: Parser, var g: Grid, a: vtcore.AnsiParser, act: vtparse.AnsiAction) -> Grid
     match act
         AnsiNothing        => g
         AnsiPrint(ch)      => grid.grid_put_char(var g, ch)

@@ -278,7 +278,7 @@ fn test_grid_resize_grow_preserves_content() [io]
 // A shrink clamps a cursor that stands on a blank row below the text into
 // the new bounds: (2,4) in a 3x5 grid is (1,2) in a 2x3.
 @test
-fn test_grid_resize_shrink_clamps_cursor() [io, ffi]
+fn test_grid_resize_shrink_clamps_cursor() [io]
     var g0 = grid.grid_new(3, 5)
     let g1 = grid.grid_cursor_set(var g0, 2, 4)   // cursor at far corner
     var g2 = grid.grid_resize(g1, 2, 3)
@@ -513,14 +513,14 @@ fn lettered_rows(rows: Int, cols: Int) -> grid.Grid [io, mutate]
     g
 
 // Column 0 of every row as one string; a blank is a space.
-fn col0_letters(g: grid.Grid) -> Str [io, ffi]
+fn col0_letters(g: grid.Grid) -> Str [io]
     var s = ""
     for r in 0..grid.grid_rows(g)
         s = s + str.from_char(grid.cell_glyph(grid.grid_get(g, r, 0)))
     s
 
 // Row `r` as one string.
-fn row_text(g: grid.Grid, r: Int) -> Str [io, ffi]
+fn row_text(g: grid.Grid, r: Int) -> Str [io]
     var s = ""
     for c in 0..grid.grid_cols(g)
         s = s + str.from_char(grid.cell_glyph(grid.grid_get(g, r, c)))
@@ -600,7 +600,7 @@ fn test_wrap_at_the_bottom_scrolls_and_marks_the_wrapped_row() [io]
     grid.grid_drop(g)
 
 // A scrollback row as one string, from the ring's own reader.
-fn scrollback_text(g: grid.Grid, l: Int) -> Str [io, ffi]
+fn scrollback_text(g: grid.Grid, l: Int) -> Str [io]
     var s = ""
     for c in 0..grid.scrollback_cols(g.scrollback)
         s = s + str.from_char(grid.cell_glyph(grid.scrollback_get_cell(g.scrollback, l, c)))
@@ -982,4 +982,44 @@ fn test_resize_cursor_on_a_text_cell() [io]
     g = grid.grid_resize(g, 4, 8)
     test.assert_eq(grid.grid_cursor_row(g), 0)
     test.assert_eq(grid.grid_cursor_col(g), 2)
+    grid.grid_drop(g)
+
+// A cursor that stands past the text of its row keeps its distance from
+// the text on a resize, and is held at the last column when that
+// distance no longer fits.
+@test
+fn test_grid_resize_clamps_a_cursor_past_the_text_to_the_last_column() [io]
+    var g0 = grid.grid_new(2, 8)
+    var g1 = grid.grid_put_char(var g0, 97)
+    var g2 = grid.grid_put_char(var g1, 98)
+    var g3 = grid.grid_cursor_set(var g2, 0, 7)
+    let g4 = grid.grid_resize(g3, 2, 4)
+    test.assert_eq(grid.grid_cursor_row(g4), 0)
+    test.assert_eq(grid.grid_cursor_col(g4), 3)
+    grid.grid_drop(g4)
+
+// The renderer's three window stamps: the synchronized-update flag, the
+// hold stamp and the resize guard each read back what was written.
+@test
+fn test_grid_sync_update_and_the_renderer_stamps_read_back() [io]
+    var g0 = grid.grid_new(2, 4)
+    test.assert_eq(grid.grid_sync_update(g0), 0)
+    var g1 = grid.grid_set_sync_update(g0, true)
+    test.assert_eq(grid.grid_sync_update(g1), 1)
+    var g2 = grid.grid_set_sync_update(g1, false)
+    test.assert_eq(grid.grid_sync_update(g2), 0)
+    test.assert_eq(grid.grid_sync_since(g2), 0)
+    var g3 = grid.grid_set_sync_since(g2, 1234)
+    test.assert_eq(grid.grid_sync_since(g3), 1234)
+    test.assert_eq(grid.grid_resize_guard(g3), 0)
+    let g4 = grid.grid_set_resize_guard(g3, 99)
+    test.assert_eq(grid.grid_resize_guard(g4), 99)
+    grid.grid_drop(g4)
+
+// The alternate-screen slot reads 0 on a fresh grid, the value a DECRQM
+// query for ?1049 turns into "reset".
+@test
+fn test_grid_on_alt_screen_is_zero_on_a_fresh_grid() [io]
+    let g = grid.grid_new(2, 4)
+    test.assert_eq(grid.grid_on_alt_screen(g), 0)
     grid.grid_drop(g)

@@ -202,7 +202,7 @@ pub fn pack_word0_idx(glyph: Int, fg_idx: Int, attrs: Int) -> Int [mutate]
 // index nobody changed therefore costs nothing, and `palette_reset`
 // (OSC 104) writes -1 into every slot.  The buffer lives as long as the
 // process.
-var g_palette = 0 - 1
+var g_palette    = 0 - 1
 var g_session_fg = 0xAAAAAA
 var g_session_bg = 0x000000
 
@@ -219,7 +219,7 @@ fn xterm_palette(i: Int) -> Int
     else if i < 232
         let steps = [0, 95, 135, 175, 215, 255]
         let c = i - 16
-        (steps[c / 36] << 16) | (steps[(c / 6) % 6] << 8) | steps[c % 6]
+        (steps[c / 36] << 16) | (steps[c / 6 % 6] << 8) | steps[c % 6]
     else
         let v = 8 + 10 * (i - 232)
         (v << 16) | (v << 8) | v
@@ -1003,6 +1003,7 @@ pub fn grid_set_sync_update(g: Grid, on: Bool) -> Grid
 pub fn grid_sync_since(g: Grid) -> Int
     array_i64_get(g.alt_meta, 18)
 
+// Record the renderer's hold stamp in slot 18 and answer the grid.
 pub fn grid_set_sync_since(g: Grid, ms: Int) -> Grid
     array_i64_set(g.alt_meta, 18, ms)
     g
@@ -1011,6 +1012,7 @@ pub fn grid_set_sync_since(g: Grid, ms: Int) -> Grid
 pub fn grid_resize_guard(g: Grid) -> Int
     array_i64_get(g.alt_meta, 19)
 
+// Record the renderer's resize guard stamp in slot 19 and answer the grid.
 pub fn grid_set_resize_guard(g: Grid, ms: Int) -> Grid
     array_i64_set(g.alt_meta, 19, ms)
     g
