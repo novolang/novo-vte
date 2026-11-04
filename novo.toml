@@ -1,9 +1,9 @@
 [package]
 name        = "novo-vte"
-version     = "0.4.0"
+version     = "0.5.0"
 description = "Shared xterm / VT escape-sequence parser + grid model — extracted from orbit/novoterm so orbit/novomux can consume the exact same parser implementation.  Eliminates the 'novomux running inside novoterm renders differently than novomux running inside xterm' class of conformance bug."
 license     = "Apache-2.0"
-novo        = ">= 0.22.0"
+novo        = ">= 0.23.1"
 stability   = "beta"
 category    = "terminal"
 layer       = "host"

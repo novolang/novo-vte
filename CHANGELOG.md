@@ -4,19 +4,74 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
-## 0.4.1 — unreleased
+## 0.5.0 — 2026-11-04
+
+Below `1.0.0` a change in what a stream of bytes does to the grid is a
+breaking change, so this release raises the minor number.  No signature
+that 0.4.0 published changed: every `pub` type and function keeps its
+name and its parameters, and the seven functions under Added are new.
+Five behaviours differ.
+
+### Breaking changes
+
+- **DECSTBM homes the cursor.**  `CSI Pt ; Pb r` moves the cursor to
+  (0, 0) when the margins are accepted, as the VT100 and xterm do; it
+  stayed where it was.  A margin pair that is refused leaves the cursor
+  alone.  Migration: a host or a test that set the scroll region and
+  relied on the cursor staying must place the cursor with
+  `grid_cursor_set` after the region is set.  A program that sends
+  DECSTBM as xterm documents it needs no change.
+- **A count of 0 is read as 1.**  CUU, CUD, CUF, CUB, CNL, CPL, HPR,
+  VPR, ICH, DCH, IL, DL, ECH, SU and SD treat an explicit `0` as the
+  default 1, as xterm does; `CSI 0 A` moved nothing and now moves one
+  row.  Migration: a stream that sent `0` to mean "do not move" must
+  omit the sequence.  A replay recorded from a program that sent `0`
+  expecting xterm's result now matches it.
+- **A resize that reflows keeps the cursor on its text.**
+  `grid_resize` to a different column count lands the cursor on the cell
+  it stood on in the re-wrapped text, and a cursor past the end of its
+  row's text keeps its distance from the text; it went to the bottom row.
+  Migration: a host that re-placed the cursor after every resize to
+  compensate for that must stop doing so, or it moves the cursor off the
+  text.
+- **DECRQM is answered.**  `CSI ? Ps $ p` for ?7, ?25, ?1049, ?2004 and
+  ?2026 appends a DECRPM reply (`CSI ? Ps ; Pm $ y`, Pm 1 set, 2 reset)
+  to the parser's response buffer, and the reply for any other mode
+  carries Pm 0.  The sequence was dropped without a reply.  Migration: a
+  host that drains the response buffer to the pty gets these replies
+  with no change; a host that discards the buffer after a query it did
+  not expect must let DECRPM through, because an application that asks
+  and gets no answer waits for its timeout.
+- **DECSET and DECRST 2026 are tracked, and the grid carries three more
+  metadata slots.**  The mode was discarded; it now sets
+  `grid_sync_update`.  The metadata array behind a `Grid` grows from 17
+  to 20 slots (the slot list in `grid.nv` documents slots 17 to 19).
+  Migration: a renderer that wants a repaint shown whole holds its frame
+  while `grid_sync_update` is 1 and bounds the wait, because an
+  application that dies with an update open would freeze the display;
+  one that ignores the flag renders exactly what it rendered before.  A
+  host that allocated the metadata array itself, outside `grid_new`,
+  must allocate 20 slots.
 
 ### Added
 
-- DECSET and DECRST 2026 (synchronized update) are tracked; `grid_sync_update` reports whether an update is open, so a renderer can hold a frame back until the end marker.
-- DECRQM for a DEC private mode (`CSI ? Ps $ p`) is answered with DECRPM for ?7, ?25, ?1049, ?2004 and ?2026 (1 set, 2 reset) and with 0 for any other mode.
-- `grid_resize_guard` and `grid_sync_since`: two stamps the renderer owns.  While the resize guard is up on the alternate screen a character at the right margin does not wrap.
+- `grid_sync_update`, `grid_set_sync_update`: the synchronized-update
+  state (DECSET and DECRST 2026).
+- `grid_sync_since`, `grid_set_sync_since`: the renderer's own stamp of
+  when it first held a frame back; the parser never writes it.
+- `grid_resize_guard`, `grid_set_resize_guard`: the renderer's own stamp
+  of a resize whose guard is still up.  While it is non-zero on the
+  alternate screen a character at the right margin does not wrap.  It
+  is 0 until a renderer sets it, so the default behaviour is unchanged.
+- `grid_on_alt_screen`: 1 while the alternate screen is the active one.
 
 ### Fixed
 
-- DECSTBM homes the cursor to (0, 0) when the margins are accepted, as the VT100 and xterm do.
-- A count of 0 in CUU, CUD, CUF, CUB, CNL, CPL, HPR, VPR, ICH, DCH, IL, DL, ECH, SU and SD is read as 1, as xterm does.
-- A resize that changes the column count keeps the cursor on the cell it stood on in the reflowed text, where it went to the bottom row.
+- The DECSTBM cursor, the zero count and the cursor on reflow were
+  divergences from xterm; the three filings are closed with this
+  release.
+
+This release requires novo 0.23.1 or later.
 
 ## 0.4.0 — 2026-10-28
 
