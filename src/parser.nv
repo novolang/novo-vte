@@ -714,7 +714,7 @@ fn dispatch_sgr(var g: Grid, a: vtcore.AnsiParser) -> Grid
                         // ordinary parameters.
                         i = i + 1
             else
-                g_acc = apply_sgr_one(g_acc, v)
+                g_acc = apply_sgr_one(var g_acc, v)
                 i = i + 1
         g_acc
 
