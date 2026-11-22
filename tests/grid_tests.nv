@@ -11,7 +11,7 @@
 // is: a change to the model updates whichever file asserts the
 // behaviour, and adds to this one when neither does.
 //
-// This file lived in orbit/novoterm/src/ until 2026-09-10, where it
+// This file lived in the src/ of novoterm until 2026-09-10, where it
 // tested a DEPENDENCY's modules from inside a consumer, and shipped to
 // every consumer of novoterm as part of src/.  It is here now, with
 // the model it covers.

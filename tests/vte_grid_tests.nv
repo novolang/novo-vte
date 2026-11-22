@@ -5,7 +5,7 @@
 //
 // novo-vte is pure Novo (std.array via @ffi and nothing else), so
 // these run headless — no PTY, no window, no GPU.  That matters:
-// orbit/novoterm's own grid_tests.nv cannot run under 
+// novoterm's own grid_tests.nv cannot run headless
 // because the package pulls in render.nv, which needs the X11 +
 // wgpu link surface.  Tests for the shared model belong here.
 

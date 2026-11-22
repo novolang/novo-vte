@@ -1,11 +1,11 @@
 // novo-vte main — library package, no executable entry point.
 //
-// orbit/novomux and orbit/novoterm both depend on this package
-// via `[dependencies] novo-vte = { path = "../novo-vte" }`.
+// novomux and novoterm both depend on this package through
+// `[dependencies] novo-vte = "^0.5.1"`.
 // The cross-package module loader pulls in src/parser.nv +
 // src/grid.nv as siblings; this main.nv stays a no-op stub because
-// cmd_pkg_build never builds a dependency's pkg_main — only the
+// `novo pkg build` never builds a dependency's `main` — only the
 // root package's `main` becomes an entry point.
 
 fn main() [io]
-    println("novo-vte: library package — depend on it via [dependencies] novo-vte = { path = \"../novo-vte\" } from another Orbit package")
+    println("novo-vte: library package — depend on it with `novo pkg add novo-vte`")

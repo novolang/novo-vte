@@ -4,11 +4,11 @@
 // Run from the package dir:
 //   novo test tests/parser_tests.nv
 //
-// Moved out of orbit/novoterm/src/ on 2026-09-10 along with
+// Moved out of the src/ of novoterm on 2026-09-10 along with
 // grid_tests.nv — see that file's header for why the contract suite
 // beside it overlaps on purpose.  The end-to-end leg that DOES belong
 // to novoterm (run the pty pump with NOVO_TERM_GRID_TRACE=1 and grep
-// the rendered dump) stays in tests/orbit/test_novoterm_parser.sh: it
+// the rendered dump) stays in novoterm's own test scripts: it
 // asserts that novoterm routes real shell output through this parser,
 // which is the consumer's contract and not the parser's.
 

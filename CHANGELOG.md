@@ -4,6 +4,19 @@ Newest first.  Below `1.0.0` a breaking change bumps the **minor**
 number; see [Version numbers in the Orbit package
 registry](https://novo-lang.org/docs/registry/semver.html).
 
+## 0.5.1 — 2026-11-22
+
+The package has a repository of its own, https://github.com/novolang/novo-vte.
+No signature and no behaviour of 0.5.0 changed.
+
+- `repository` names that repository.  0.5.0 named the repository of the
+  compiler.
+- The call of `apply_sgr_one` in the SGR dispatcher carries the `var`
+  marker of an in-out argument, as the compiler's rule asks.
+- The package carries its licence text, and the documents and comments
+  name novoterm and novomux by name where they named paths of the
+  repository the package was developed in.
+
 ## 0.5.0 — 2026-11-04
 
 Below `1.0.0` a change in what a stream of bytes does to the grid is a
@@ -125,7 +138,7 @@ changed.
   or `_bg_set_h` no longer reaches the parser, which reads this
   package's state, and calls the `grid` functions instead.  A program
   that only feeds bytes and reads cells changes nothing.
-  `orbit/novoterm` and `orbit/novomux` call them.
+  novoterm and novomux call them.
 
 - **Eight public functions take their grid `var`, and a call marks it.**
   `grid_put_char`, `grid_backspace`, `grid_tab`, `grid_carriage_return`,
@@ -138,7 +151,7 @@ changed.
   signatures changed and no function's answer did.  This is a breaking
   change for callers, so below 1.0 the release that carries it bumps
   the minor number, and it needs Novo 0.21.1 or later for the marker.
-  `orbit/novoterm` and `orbit/novomux` write the markers.
+  novoterm and novomux write the markers.
 
 - **The escape-sequence parser is `ansi-nv`'s.**  `src/parser.nv` no
   longer carries a state machine: it depends on `ansi-nv ^0.2.0`, feeds
@@ -169,7 +182,7 @@ changed.
   192-entry parameter region the array carried for them.  `Parser` is
   two side-arrays and the machine, and `parser_state` reads the state
   off the machine rather than out of a slot.  Measured by
-  `orbit/novoterm`'s `bench_parse` probe on the same 10 040-byte
+  novoterm's `bench_parse` probe on the same 10 040-byte
   stream, best of four runs on one workstation: 10.4 MB/s before,
   17.1 MB/s after, against the suite's 50 KB/s bar.
 
@@ -194,7 +207,7 @@ changed.
 
 - **The contract suite moved out of `src/`** — `vte_grid_tests.nv` (758
   lines) now lives under `tests/`, which is where
-  `orbit/package-template` puts a suite and for the reason it gives:
+  the package template puts a suite and for the reason it gives:
   `src/` ships whole, so a consumer compiled it, the published archive
   carried it, and `novo doc` printed a third module section for it — a
   reader opening the package's page to learn what it does was shown its

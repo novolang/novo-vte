@@ -1,10 +1,9 @@
 # novo-vte
 
 The shared xterm / VT escape-sequence parser and grid model.
-Extracted from `orbit/novoterm` so `orbit/novomux` consumes the exact
-same parser, which is what removes the "novomux inside novoterm
-renders differently than novomux inside xterm" class of conformance
-bug.
+It was extracted from novoterm so that novomux consumes the exact
+same parser, which removes the "novomux inside novoterm renders
+differently than novomux inside xterm" class of conformance bug.
 
 Pure Novo, with no C binding of its own, so it runs headless: no PTY,
 no window and no GPU.  The package is layer `host`; its only effect
@@ -183,13 +182,13 @@ Bit 3 is not free.  A new rendition takes bit 6 or 7.
 
 ## Consumers
 
-- **`orbit/novoterm`** — GPU renderer.  Packs the attribute byte into
+- **novoterm** — GPU renderer.  Packs the attribute byte into
   the instance's `z` word; the WGSL fragment stage branches on bold,
   underline, crossed-out and the bar cursor, and applies reverse at
   the vertex stage by swapping fg and bg.  Italic is stored but not
   drawn: a skew is vertex-stage geometry rather than a fragment
   branch.
-- **`orbit/novomux`** — text renderer.  `emit_sgr_attrs` re-emits one
+- **novomux** — text renderer.  `emit_sgr_attrs` re-emits one
   SGR per on-bit to the host terminal, so every rendition this table
   lists survives a mux pane, italic included.
 
